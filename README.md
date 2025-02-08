@@ -83,5 +83,5 @@ Feel free to fork this repository and submit pull requests with improvements or 
 
 ## Contact
 
-For more information or to report issues, contact [Joseph Duval](cecilarmitais@gmail.com).
+For more information or to report issues, contact [cecilarmitais](cecilarmitais@gmail.com).
 
