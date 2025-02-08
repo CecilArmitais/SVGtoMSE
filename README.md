@@ -17,7 +17,7 @@ A simple Python tool that converts SVG path data into the **MSE (Magic Set Edito
 
 ## Installation
 
-1. **Download the latest release** of the [SVG to MSE Converter](https://github.com/CecilArmitais/SVGtoMSE/releases/download/v1.0.0/SVGtoMSE.exe) (Windows `.exe` file).
+1. **Download the latest release** of the [SVG to MSE Converter](https://github.com/CecilArmitais/SVGtoMSE/releases) (Windows `.exe` file).
 2. **No installation necessary** – Simply **download** the `.exe` file and drag and drop 1 or more SVGs onto it.
 
    The first time you run, windows may pop up a warning. If running the exe makes you uncomfortable, you can download the script and run it manually:
@@ -78,10 +78,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Contributing
 
 Feel free to fork this repository and submit pull requests with improvements or fixes. All contributions are welcome!
-
----
-
-## Contact
-
-For more information or to report issues, contact [cecilarmitais](cecilarmitais@gmail.com).
 
