@@ -29,22 +29,22 @@ A simple Python tool that converts SVG path data into the **MSE (Magic Set Edito
 
 ## Usage
 
-1. **Drag and Drop** your SVG file onto the `SVGtoMSE.exe` (Windows) to convert the SVG path data to MSE format. The tool will output a `.mse-symbol` file in the same directory.
+A. **Drag and Drop** your SVG file onto the `SVGtoMSE.exe` (Windows) to convert the SVG path data to MSE format. The tool will output a `.mse-symbol` file in the same directory.
 
-2. **Command Line Usage** (Optional):
+B. **Command Line Usage** (Optional):
    - Open a terminal and run:
      ```sh
      SVGtoMSE.exe <path_to_svg_file>
      ```
 
-3. **Supported Input Format**:
+**Supported Input Format**:
    - The SVG file should contain `<path>` elements with valid `d` attributes.
    - Example input:
      ```xml
      <path d="M10,10 C20,5 30,15 40,20"/>
      ```
 
-4. **Output**:
+**Output**:
    - The program will generate a `.mse-symbol` file with relative coordinates formatted as required by the Magic Set Editor.
    - Example output (partial):
      ```
