@@ -162,6 +162,8 @@ def convert_to_mse(svg_file):
     """
     Converts an SVG file's paths into MSE format, handling multiple subpaths.
     """
+    relativehandle = 1 # Determines the ratio from MSE to SVG handle strength.
+
     viewbox = get_viewbox(svg_file)
     if not viewbox:
         return "Error: No valid viewBox found."
@@ -193,21 +195,17 @@ part:
 
             if i == 0:
                 # First point uses the last c2 control point relative to the start position
-                handle_before_x = last_c2_x - norm_start_x
-                handle_before_y = last_c2_y - norm_start_y
+                handle_before_x = (last_c2_x - norm_start_x) * relativehandle
+                handle_before_y = (last_c2_y - norm_start_y) * relativehandle
             else:
                 _, _, prev_c1_x, prev_c1_y, prev_c2_x, prev_c2_y, prev_end_x, prev_end_y = subpath[i - 1]
                 norm_prev_c2_x, norm_prev_c2_y = normalize_coordinates(prev_c2_x, prev_c2_y, viewbox)
-                handle_before_x = norm_prev_c2_x - norm_start_x
-                handle_before_y = norm_prev_c2_y - norm_start_y
+                handle_before_x = (norm_prev_c2_x - norm_start_x) * relativehandle
+                handle_before_y = (norm_prev_c2_y - norm_start_y) * relativehandle
 
             # Handles relative to the point
-            handle_after_x = norm_c1_x - norm_start_x
-            handle_after_y = norm_c1_y - norm_start_y
-            next_handle_before_x = norm_c2_x - norm_end_x
-            next_handle_before_y = norm_c2_y - norm_end_y
-            next_handle_after_x = norm_end_x - norm_end_x
-            next_handle_after_y = norm_end_y - norm_end_y
+            handle_after_x = (norm_c1_x - norm_start_x) * relativehandle
+            handle_after_y = (norm_c1_y - norm_start_y) * relativehandle
 
             mse_points.append(f"""	point:
 		position: ({norm_start_x:.6f},{norm_start_y:.6f})
@@ -215,13 +213,6 @@ part:
 		line_after: curve
 		handle_before: ({handle_before_x:.6f},{handle_before_y:.6f})
 		handle_after: ({handle_after_x:.6f},{handle_after_y:.6f})""")
-
-            mse_points.append(f"""		point:
-		position: ({norm_end_x:.6f},{norm_end_y:.6f})
-		lock: free
-		line_after: curve
-		handle_before: ({next_handle_before_x:.6f},{next_handle_before_y:.6f})
-		handle_after: ({next_handle_after_x:.6f},{next_handle_after_y:.6f})""")
 
         mse_output += "\n" + "\n".join(mse_points)  # Append points without extra line breaks
     return mse_output
