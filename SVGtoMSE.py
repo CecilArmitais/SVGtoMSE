@@ -97,68 +97,79 @@ def normalize_coordinates(x, y, viewbox):
 
     return norm_x, norm_y
 
+def parse_path_commands(d_attr):
+    """
+    Parses an SVG path 'd' attribute string into a list of command dictionaries.
+    
+    Each dictionary has:
+      - "cmd": the command letter (e.g., "M", "C", "l", etc.)
+      - "args": a list of numeric arguments for that command.
+      
+    This regex splits on any command letter.
+    """
+    # This pattern captures a command letter followed by everything until the next command letter.
+    command_pattern = re.compile(r'([MmZzLlHhVvCcSsQqTtAa])([^MmZzLlHhVvCcSsQqTtAa]*)')
+    commands = []
+    for match in command_pattern.findall(d_attr):
+        cmd = match[0]
+        args_str = match[1].strip()
+        if args_str:
+            # This regex captures numbers, including decimal and scientific notation.
+            args = list(map(float, re.findall(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?', args_str)))
+        else:
+            args = []
+        commands.append({"cmd": cmd, "args": args})
+    return commands
+
 def extract_subpaths(svg_file):
     """
-    Extracts all paths from an SVG file, splitting each path into subpaths at 'M' commands.
-    Returns a list of lists, where each inner list represents a subpath.
+    Extracts all paths from an SVG file and splits them into subpaths.
+    
+    A subpath is defined as a sequence of path commands starting with a moveto (M/m) 
+    command and continuing until the next moveto.
+    
+    Returns a list of subpaths, where each subpath is a list of command dictionaries.
+    Also prints an error message if there are unsupported elements (ignoring the <svg> root).
     """
     try:
         tree = ET.parse(svg_file)
         root = tree.getroot()
 
-        # Find all <path> elements in the SVG
-        path_elements = root.findall(".//{http://www.w3.org/2000/svg}path")
-        
+        # Find unsupported elements (ignoring <svg>)
         unsupported_elements = [
             elem.tag for elem in root.iter()
-            if elem.tag != "{http://www.w3.org/2000/svg}path" and elem.tag != "{http://www.w3.org/2000/svg}svg"
+            if elem.tag not in ("{http://www.w3.org/2000/svg}svg", "{http://www.w3.org/2000/svg}path")
         ]
-        
         if unsupported_elements:
             print(f"ERROR - Unsupported elements: {len(unsupported_elements)} objects failed to convert.")
 
+        # Find all <path> elements in the SVG
+        path_elements = root.findall(".//{http://www.w3.org/2000/svg}path")
         if not path_elements:
             print("No <path> elements found in SVG.")
             return None
 
         all_subpaths = []
-        path_pattern = re.compile(r"M([\d.-]+),([\d.-]+)|C([\d.-]+),([\d.-]+) ([\d.-]+),([\d.-]+) ([\d.-]+),([\d.-]+)")
-
-        for path_element in path_elements:
-            d_attr = path_element.get("d")
+        for path_elem in path_elements:
+            d_attr = path_elem.get("d")
             if not d_attr:
                 print("Skipping a <path> without 'd' attribute.")
                 continue
-
-            matches = path_pattern.findall(d_attr)
-
+            # Parse all commands from the d attribute.
+            commands = parse_path_commands(d_attr)
+            # Split commands into subpaths
+            subpaths = []
             current_subpath = []
-            current_x, current_y = None, None
-            path_subpaths = []
-
-            for match in matches:
-                if match[0]:  # 'M' command found, starting a new subpath
+            for command in commands:
+                if command["cmd"] in ["M", "m"]:
+                    # If current_subpath is not empty, a new moveto indicates a new subpath.
                     if current_subpath:
-                        path_subpaths.append(current_subpath)  # Store previous subpath
-                    current_subpath = []  # Start a new subpath
-                    current_x, current_y = float(match[0]), float(match[1])
-                else:  # 'C' command found
-                    c1_x, c1_y = float(match[2]), float(match[3])
-                    c2_x, c2_y = float(match[4]), float(match[5])
-                    end_x, end_y = float(match[6]), float(match[7])
-
-                    if current_x is None or current_y is None:
-                        print("Error: 'C' command found before 'M' command.")
-                        return None
-
-                    current_subpath.append((current_x, current_y, c1_x, c1_y, c2_x, c2_y, end_x, end_y))
-                    current_x, current_y = end_x, end_y  # Update position
-
+                        subpaths.append(current_subpath)
+                        current_subpath = []
+                current_subpath.append(command)
             if current_subpath:
-                path_subpaths.append(current_subpath)  # Add last subpath
-
-            all_subpaths.extend(path_subpaths)
-
+                subpaths.append(current_subpath)
+            all_subpaths.extend(subpaths)
         return all_subpaths
 
     except ET.ParseError as e:
@@ -171,8 +182,9 @@ def extract_subpaths(svg_file):
 def convert_to_mse(svg_file):
     """
     Converts an SVG file's paths into MSE format, handling multiple subpaths.
+    Only supports M/m and C/c commands; others are skipped.
     """
-    relativehandle = 1 # Determines the ratio from MSE to SVG handle strength.
+    relativehandle = 1  # Determines the ratio from MSE to SVG handle strength.
 
     viewbox = get_viewbox(svg_file)
     if not viewbox:
@@ -184,36 +196,80 @@ def convert_to_mse(svg_file):
 
     mse_output = "mse_version: 0.3.5"
 
+    # Process each subpath (each is a list of command dictionaries)
     for subpath in subpaths:
+        # Build segments from commands in the subpath.
+        segments = []
+        current_point = None
+        for command in subpath:
+            cmd = command["cmd"]
+            args = command["args"]
+            if cmd in ["M", "m"]:
+                # Set starting point.
+                if cmd == "M":
+                    current_point = (args[0], args[1])
+                else:  # 'm' is relative
+                    if current_point is None:
+                        current_point = (args[0], args[1])
+                    else:
+                        current_point = (current_point[0] + args[0], current_point[1] + args[1])
+            elif cmd in ["C", "c"]:
+                if current_point is None:
+                    continue  # Skip if no starting point.
+                if cmd == "C":
+                    c1 = (args[0], args[1])
+                    c2 = (args[2], args[3])
+                    end = (args[4], args[5])
+                else:  # 'c' is relative
+                    c1 = (current_point[0] + args[0], current_point[1] + args[1])
+                    c2 = (current_point[0] + args[2], current_point[1] + args[3])
+                    end = (current_point[0] + args[4], current_point[1] + args[5])
+                segment = (current_point[0], current_point[1],
+                           c1[0], c1[1],
+                           c2[0], c2[1],
+                           end[0], end[1])
+                segments.append(segment)
+                current_point = end
+            else:
+                # Skip any unsupported command.
+                continue
+
+        # If no segments were built, skip this subpath.
+        if not segments:
+            continue
+
         mse_output += """
 part:
 	type: shape
 	name: polygon
 	combine: overlap
 """
-
         mse_points = []
 
-        # Get the last control point of the subpath for the first point's handle_before
-        last_c2_x, last_c2_y = normalize_coordinates(subpath[-1][4], subpath[-1][5], viewbox)
+        # For the first point in the subpath, use the last segment's second control point (c2)
+        last_seg = segments[-1]
+        last_c2_x, last_c2_y = normalize_coordinates(last_seg[4], last_seg[5], viewbox)
 
-        for i, (start_x, start_y, c1_x, c1_y, c2_x, c2_y, end_x, end_y) in enumerate(subpath):
+        # Process each segment
+        for i, seg in enumerate(segments):
+            start_x, start_y, c1_x, c1_y, c2_x, c2_y, end_x, end_y = seg
+
             norm_start_x, norm_start_y = normalize_coordinates(start_x, start_y, viewbox)
             norm_c1_x, norm_c1_y = normalize_coordinates(c1_x, c1_y, viewbox)
             norm_c2_x, norm_c2_y = normalize_coordinates(c2_x, c2_y, viewbox)
             norm_end_x, norm_end_y = normalize_coordinates(end_x, end_y, viewbox)
 
+            # For the first segment, use the last segment's c2 as handle_before.
             if i == 0:
-                # First point uses the last c2 control point relative to the start position
                 handle_before_x = (last_c2_x - norm_start_x) * relativehandle
                 handle_before_y = (last_c2_y - norm_start_y) * relativehandle
             else:
-                _, _, prev_c1_x, prev_c1_y, prev_c2_x, prev_c2_y, prev_end_x, prev_end_y = subpath[i - 1]
-                norm_prev_c2_x, norm_prev_c2_y = normalize_coordinates(prev_c2_x, prev_c2_y, viewbox)
+                prev_seg = segments[i-1]
+                norm_prev_c2_x, norm_prev_c2_y = normalize_coordinates(prev_seg[4], prev_seg[5], viewbox)
                 handle_before_x = (norm_prev_c2_x - norm_start_x) * relativehandle
                 handle_before_y = (norm_prev_c2_y - norm_start_y) * relativehandle
 
-            # Handles relative to the point
+            # The handle_after for the starting point is the offset from start to c1.
             handle_after_x = (norm_c1_x - norm_start_x) * relativehandle
             handle_after_y = (norm_c1_y - norm_start_y) * relativehandle
 
@@ -223,8 +279,8 @@ part:
 		line_after: curve
 		handle_before: ({handle_before_x:.6f},{handle_before_y:.6f})
 		handle_after: ({handle_after_x:.6f},{handle_after_y:.6f})""")
-
-        mse_output += "\n" + "\n".join(mse_points)  # Append points without extra line breaks
+            
+        mse_output += "\n" + "\n".join(mse_points)
     return mse_output
 
 
