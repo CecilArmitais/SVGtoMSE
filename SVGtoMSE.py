@@ -81,9 +81,19 @@ def normalize_coordinates(x, y, viewbox):
     if width == 0 or height == 0:
         raise ValueError("Invalid viewBox dimensions: width and height must be nonzero.")
 
+    height_adjustment = 0
+    width_adjustment = 0
+
+    if width > height:
+        norm_ratio = width
+        height_adjustment = (width - height) / 2
+    else:
+        norm_ratio = height
+        width_adjustment = (height - width) / 2
+
     # Normalize x and y
-    norm_x = (x - min_x) / width
-    norm_y = (y - min_y) / height
+    norm_x = (x - min_x + width_adjustment) / norm_ratio
+    norm_y = (y - min_y + height_adjustment) / norm_ratio
 
     return norm_x, norm_y
 
