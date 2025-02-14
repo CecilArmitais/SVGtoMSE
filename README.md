@@ -6,11 +6,10 @@ A simple Python tool that converts SVG path data into the **MSE (Magic Set Edito
 
 ## Features
 - Converts SVG paths into **MSE-compatible** symbol files.
-- Supports some basic path commands: `M` (Move), `C` (Curve).
+- Supports all path commands.
 - Generates a `.mse-symbol` file for use with **Magic Set Editor**.
   
 **Limitations**:
-- Currently **does not support `L` (Line) commands** – Straight line segments are skipped, and only curves are processed.
 - Currently **does not support other SVG elements** such as `<circle>`, `<rect>`, `<polygon>`, etc. Only `<path>` elements with valid `d` attributes are converted.
 
 ---
