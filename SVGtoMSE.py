@@ -246,14 +246,21 @@ def arc_to_cubic(x1, y1, rx, ry, phi_deg, large_arc_flag, sweep_flag, x2, y2):
 
 #Refactored parts of convert_to_mse():
 
-def extract_subpaths(svg_file):
+def extract_elements(svg_file):
 	"""
-	Extracts all paths from an SVG file and splits them into subpaths.
+	Extracts all path elements from an SVG file and assigns them a unique identifier 
+	within their parent path.
 	
-	A subpath is defined as a sequence of path commands starting with a moveto (M/m) 
-	command and continuing until the next moveto.
+	Each path is broken into elements, where an element is a sequence of commands 
+	starting with a moveto (M/m) and continuing until the next moveto.
 	
-	Returns a list of subpaths, where each subpath is a list of command dictionaries.
+	Returns a list of elements, where each element is a dictionary containing:
+	- `parent_id`: The unique identifier of the parent path.
+	- `element_id`: The unique identifier of this element within the path.
+	- `path_type`: The classification of the parent path (currently always "path", 
+	  but will be expanded to support other shape types).
+	- `commands`: A list of command dictionaries for the element.
+	
 	Also prints an error message if there are unsupported elements (ignoring the <svg> root).
 	"""
 	try:
@@ -274,28 +281,50 @@ def extract_subpaths(svg_file):
 			print("No <path> elements found in SVG.")
 			return None
 
-		all_subpaths = []
-		for path_elem in path_elements:
+		all_elements = []
+		for path_index, path_elem in enumerate(path_elements):
 			d_attr = path_elem.get("d")
 			if not d_attr:
-				print("Skipping a <path> without 'd' attribute.")
+				print(f"Skipping a <path> without 'd' attribute (path index {path_index}).")
 				continue
+			
+			# Assign a unique identifier to the parent path
+			parent_id = f"path_{path_index}"
+			path_type = "path"  # Futureproofing for other shapes
+
 			# Parse all commands from the d attribute.
 			commands = parse_path_commands(d_attr)
-			# Split commands into subpaths
-			subpaths = []
-			current_subpath = []
+			
+			# Split commands into elements
+			elements = []
+			current_element = []
+			element_index = 0  # Unique identifier within the parent path
+			
 			for command in commands:
 				if command["cmd"] in ["M", "m"]:
-					# If current_subpath is not empty, a new moveto indicates a new subpath.
-					if current_subpath:
-						subpaths.append(current_subpath)
-						current_subpath = []
-				current_subpath.append(command)
-			if current_subpath:
-				subpaths.append(current_subpath)
-			all_subpaths.extend(subpaths)
-		return all_subpaths
+					# If current_element is not empty, a new moveto indicates a new element.
+					if current_element:
+						elements.append({
+							"parent_id": parent_id,
+							"element_id": f"{parent_id}_{element_index}",
+							"path_type": path_type,
+							"commands": current_element
+						})
+						element_index += 1
+						current_element = []
+				current_element.append(command)
+			
+			if current_element:
+				elements.append({
+					"parent_id": parent_id,
+					"element_id": f"{parent_id}_{element_index}",
+					"path_type": path_type,
+					"commands": current_element
+				})
+			
+			all_elements.extend(elements)
+		
+		return all_elements
 
 	except ET.ParseError as e:
 		print(f"Error parsing SVG file: {e}")
@@ -504,104 +533,107 @@ def build_segments(subpath):
 	return segments
 
 def format_segment(seg, index, segments, viewbox):
-    """
-    Returns the formatted MSE point for a segment.
-    - Curves (C) output: 'line_after: curve' and may have both handles.
-    - Lines (L) output: 'line_after: line' and may have only handle_before.
-    """
-    segment_type = seg[0]
-    start = seg[1]  # Common start point
-    outputtext = "	point:"
+	"""
+	Returns the formatted MSE point for a segment.
+	- Curves (C) output: 'line_after: curve' and may have both handles.
+	- Lines (L) output: 'line_after: line' and may have only handle_before.
+	"""
+	segment_type = seg[0]
+	start = seg[1]  # Common start point
+	outputtext = "	point:"
 
-    norm_start = normalize_coordinates(start[0], start[1], viewbox)
+	norm_start = normalize_coordinates(start[0], start[1], viewbox)
 
-    # Determine the previous segment (the one before the current segment in MSE format)
-    prev_seg = segments[len(segments) - 1] if index == 0 else segments[index - 1]
+	# Determine the previous segment (the one before the current segment in MSE format)
+	prev_seg = segments[len(segments) - 1] if index == 0 else segments[index - 1]
 
-    # Handle before calculation: for the first point, use last_c2 (the final c2 of the previous segment)
-    if prev_seg[0] == "C":
-        norm_prev_c2 = normalize_coordinates(prev_seg[3][0], prev_seg[3][1], viewbox)
-    else:
-        norm_prev_c2 = normalize_coordinates(prev_seg[1][0], prev_seg[1][1], viewbox)
-    
-    handle_before = (norm_prev_c2[0] - norm_start[0], norm_prev_c2[1] - norm_start[1])
+	# Handle before calculation: for the first point, use last_c2 (the final c2 of the previous segment)
+	if prev_seg[0] == "C":
+		norm_prev_c2 = normalize_coordinates(prev_seg[3][0], prev_seg[3][1], viewbox)
+	else:
+		norm_prev_c2 = normalize_coordinates(prev_seg[1][0], prev_seg[1][1], viewbox)
+	
+	handle_before = (norm_prev_c2[0] - norm_start[0], norm_prev_c2[1] - norm_start[1])
 
-    # Case for curves (C) and lines (L)
-    if segment_type == "C":
-        # Unpack control points for curves
-        c1 = seg[2]
-        norm_c1 = normalize_coordinates(c1[0], c1[1], viewbox)
+	# Case for curves (C) and lines (L)
+	if segment_type == "C":
+		# Unpack control points for curves
+		c1 = seg[2]
+		norm_c1 = normalize_coordinates(c1[0], c1[1], viewbox)
 
-        # Handle after calculation for curves
-        handle_after = (norm_c1[0] - norm_start[0], norm_c1[1] - norm_start[1])
+		# Handle after calculation for curves
+		handle_after = (norm_c1[0] - norm_start[0], norm_c1[1] - norm_start[1])
 
-        outputtext += f"""
+		outputtext += f"""
 		position: ({norm_start[0]:.6f},{norm_start[1]:.6f})
 		lock: free
 		line_after: curve"""
 
-        # If coming from a curve, output both handles
-        if prev_seg[0] == "C":
-            outputtext += f"""
+		# If coming from a curve, output both handles
+		if prev_seg[0] == "C":
+			outputtext += f"""
 		handle_before: ({handle_before[0]:.6f},{handle_before[1]:.6f})
 		handle_after: ({handle_after[0]:.6f},{handle_after[1]:.6f})"""
-        # If coming from a line, output only handle_after
-        elif prev_seg[0] == "L":
-            outputtext += f"""
+		# If coming from a line, output only handle_after
+		elif prev_seg[0] == "L":
+			outputtext += f"""
 		handle_after: ({handle_after[0]:.6f},{handle_after[1]:.6f})"""
 
-    elif segment_type == "L":
-        # Unpack line endpoint
-        end = seg[2]
-        outputtext += f"""
+	elif segment_type == "L":
+		# Unpack line endpoint
+		end = seg[2]
+		outputtext += f"""
 		position: ({norm_start[0]:.6f},{norm_start[1]:.6f})
 		lock: free
 		line_after: line"""
 
-        # If coming from a curve, output handle_before
-        if prev_seg[0] == "C":
-            outputtext += f"""
+		# If coming from a curve, output handle_before
+		if prev_seg[0] == "C":
+			outputtext += f"""
 		handle_before: ({handle_before[0]:.6f},{handle_before[1]:.6f})"""
 
-    else:
-        print("Unknown segment type detected.")
+	else:
+		print("Unknown segment type detected.")
 
-    return outputtext
+	return outputtext
 
 
 	
 def convert_to_mse(svg_file):
 	"""
-	Converts an SVG file's paths into MSE format, handling multiple subpaths.
+	Converts an SVG file's paths into MSE format, handling multiple elements.
 	Supports M/m, C/c, and L/l commands; others are skipped.
 	"""
 	viewbox = get_viewbox(svg_file)
 	if not viewbox:
 		return "Error: No valid viewBox found."
 
-	subpaths = extract_subpaths(svg_file)
-	if not subpaths:
-		return "Error: No valid subpaths found."
+	elements = extract_elements(svg_file)
+	if not elements:
+		return "Error: No valid elements found."
 
 	mse_output = "mse_version: 0.3.5"
 
-	for subpath in subpaths:
-		segments = build_segments(subpath)
-		if not segments:
-			continue
+	for element in reversed(elements):
+		if element["path_type"] == "path":
+			segments = build_segments(element["commands"])  # Use only the 'commands' field
+			if not segments:
+				continue
 
-		mse_output += """
+			subpath_name = element["element_id"] if "element_id" in element else "unnamed_path"
+
+			mse_output += f"""
 part:
 	type: shape
-	name: polygon
+	name: {subpath_name}
 	combine: overlap
 """
-		mse_points = []
+			mse_points = []
 
-		for i, seg in enumerate(segments):
-			mse_points.append(format_segment(seg, i, segments, viewbox))
-			
-		mse_output += "\n" + "\n".join(mse_points)
+			for i, seg in enumerate(segments):
+				mse_points.append(format_segment(seg, i, segments, viewbox))
+
+			mse_output += "\n" + "\n".join(mse_points)
 
 	return mse_output
 
