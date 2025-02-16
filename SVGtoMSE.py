@@ -96,7 +96,7 @@ def normalize_coordinates(x, y, viewbox):
 
 
 
-#Refactored  parts of extract_subpaths():
+#Refactored  parts of extract_elements():
 
 def parse_path_commands(d_attr):
 	"""
@@ -248,82 +248,130 @@ def arc_to_cubic(x1, y1, rx, ry, phi_deg, large_arc_flag, sweep_flag, x2, y2):
 
 def extract_elements(svg_file):
 	"""
-	Extracts all path elements from an SVG file and assigns them a unique identifier 
-	within their parent path.
-	
+	Extracts path and rectangle elements from an SVG file, preserving SVG order.
+
 	Each path is broken into elements, where an element is a sequence of commands 
 	starting with a moveto (M/m) and continuing until the next moveto.
-	
+
+	Each rectangle is converted into a path-like format with four lines.
+
 	Returns a list of elements, where each element is a dictionary containing:
-	- `parent_id`: The unique identifier of the parent path.
-	- `element_id`: The unique identifier of this element within the path.
-	- `path_type`: The classification of the parent path (currently always "path", 
-	  but will be expanded to support other shape types).
+	- `parent_id`: The unique identifier of the parent shape.
+	- `element_id`: The unique identifier of this element within the shape.
+	- `path_type`: The classification of the shape (e.g., "path", "rectangle").
 	- `commands`: A list of command dictionaries for the element.
-	
-	Also prints an error message if there are unsupported elements (ignoring the <svg> root).
 	"""
 	try:
 		tree = ET.parse(svg_file)
 		root = tree.getroot()
 
-		# Find unsupported elements (ignoring <svg>)
-		unsupported_elements = [
-			elem.tag for elem in root.iter()
-			if elem.tag not in ("{http://www.w3.org/2000/svg}svg", "{http://www.w3.org/2000/svg}path")
-		]
-		if unsupported_elements:
-			print(f"ERROR - Unsupported elements: {len(unsupported_elements)} objects failed to convert.")
-
-		# Find all <path> elements in the SVG
-		path_elements = root.findall(".//{http://www.w3.org/2000/svg}path")
-		if not path_elements:
-			print("No <path> elements found in SVG.")
-			return None
-
 		all_elements = []
-		for path_index, path_elem in enumerate(path_elements):
-			d_attr = path_elem.get("d")
-			if not d_attr:
-				print(f"Skipping a <path> without 'd' attribute (path index {path_index}).")
-				continue
-			
-			# Assign a unique identifier to the parent path
-			parent_id = f"path_{path_index}"
-			path_type = "path"  # Futureproofing for other shapes
+		path_count = 0  # Tracks unique IDs for paths
+		rect_count = 0  # Tracks unique IDs for rectangles
 
-			# Parse all commands from the d attribute.
-			commands = parse_path_commands(d_attr)
-			
-			# Split commands into elements
-			elements = []
-			current_element = []
-			element_index = 0  # Unique identifier within the parent path
-			
-			for command in commands:
-				if command["cmd"] in ["M", "m"]:
-					# If current_element is not empty, a new moveto indicates a new element.
-					if current_element:
-						elements.append({
-							"parent_id": parent_id,
-							"element_id": f"{parent_id}_{element_index}",
-							"path_type": path_type,
-							"commands": current_element
-						})
-						element_index += 1
-						current_element = []
-				current_element.append(command)
-			
-			if current_element:
-				elements.append({
+		for elem in root:
+			tag = elem.tag.replace("{http://www.w3.org/2000/svg}", "")  # Remove namespace
+
+			if tag == "path":
+				d_attr = elem.get("d")
+				if not d_attr:
+					print(f"Skipping a <path> without 'd' attribute (path_{path_count}).")
+					continue
+
+				# Assign a unique identifier to the parent path
+				parent_id = f"path_{path_count}"
+				path_type = "path"
+
+				# Parse all commands from the d attribute.
+				commands = parse_path_commands(d_attr)
+				
+				# Split commands into elements
+				elements = []
+				element_index = 0  # Unique identifier within the parent shape
+				
+				current_element = []
+				for command in commands:
+					if command["cmd"] in ["M", "m"]:
+						# If current_element is not empty, a new moveto indicates a new element.
+						if current_element:
+							elements.append({
+								"parent_id": parent_id,
+								"element_id": f"{parent_id}_{element_index}",
+								"path_type": path_type,
+								"commands": current_element
+							})
+							element_index += 1
+							current_element = []
+					current_element.append(command)
+				
+				if current_element:
+					elements.append({
+						"parent_id": parent_id,
+						"element_id": f"{parent_id}_{element_index}",
+						"path_type": path_type,
+						"commands": current_element
+					})
+				
+				all_elements.extend(elements)
+				path_count += 1  # Increment for the next path
+
+			elif tag == "rect":
+				x = float(elem.get("x", 0))
+				y = float(elem.get("y", 0))
+				width = float(elem.get("width", 0))
+				height = float(elem.get("height", 0))
+				rx = elem.get("rx")
+				ry = elem.get("ry")
+
+				if rx is None and ry is None:
+					rx, ry = 0, 0
+				elif rx is None:
+					rx = float(ry)
+				elif ry is None:
+					ry = float(rx)
+				else:
+					rx, ry = float(rx), float(ry)
+
+				# Ensure rx/ry don't exceed half the width/height
+				rx = min(rx, width / 2)
+				ry = min(ry, height / 2)
+
+				parent_id = f"rect_{rect_count}"
+				path_type = "rectangle"
+
+				if rx == 0 and ry == 0:
+					# Simple rectangle (no rounding)
+					commands = [
+						{"cmd": "M", "args": [x, y]},
+						{"cmd": "L", "args": [x + width, y]},
+						{"cmd": "L", "args": [x + width, y + height]},
+						{"cmd": "L", "args": [x, y + height]},
+						{"cmd": "Z", "args": []}
+					]
+				else:
+					# Rounded rectangle using quadratic Bézier curves
+					commands = [
+						{"cmd": "M", "args": [x + rx, y]},  # Move to start of top-left curve
+						{"cmd": "L", "args": [x + width - rx, y]},  # Top straight line
+						{"cmd": "Q", "args": [x + width, y, x + width, y + ry]},  # Top-right curve
+						{"cmd": "L", "args": [x + width, y + height - ry]},  # Right straight line
+						{"cmd": "Q", "args": [x + width, y + height, x + width - rx, y + height]},  # Bottom-right curve
+						{"cmd": "L", "args": [x + rx, y + height]},  # Bottom straight line
+						{"cmd": "Q", "args": [x, y + height, x, y + height - ry]},  # Bottom-left curve
+						{"cmd": "L", "args": [x, y + ry]},  # Left straight line
+						{"cmd": "Q", "args": [x, y, x + rx, y]},  # Top-left curve
+						{"cmd": "Z", "args": []}  # Close path
+					]
+
+				all_elements.append({
 					"parent_id": parent_id,
-					"element_id": f"{parent_id}_{element_index}",
+					"element_id": f"{parent_id}_0",
 					"path_type": path_type,
-					"commands": current_element
+					"commands": commands
 				})
-			
-			all_elements.extend(elements)
-		
+
+				rect_count += 1
+
 		return all_elements
 
 	except ET.ParseError as e:
@@ -333,9 +381,9 @@ def extract_elements(svg_file):
 		print(f"Unexpected error: {e}")
 		return None
 
-def build_segments(subpath):
+def build_segments(element):
 	"""
-	Build a list of segments from a subpath.
+	Build a list of segments from a element.
 	Each segment is:
 	  - For curves: ("C", start, c1, c2, end)
 	  - For lines:   ("L", start, end)
@@ -352,11 +400,11 @@ def build_segments(subpath):
 	"""
 	segments = []
 	current_point = None
-	start_point = None  # Store the first point of a subpath
+	start_point = None  # Store the first point of a element
 	last_quad_ctrl = None  # For smooth quadratic
 	prev_command = None  # For S/s and T/t reflection
 
-	for command in subpath:
+	for command in element:
 		cmd = command["cmd"]
 		args = command["args"]
 
@@ -368,7 +416,7 @@ def build_segments(subpath):
 					current_point = (args[0], args[1])
 				else:
 					current_point = (current_point[0] + args[0], current_point[1] + args[1])
-			start_point = current_point  # Store subpath start
+			start_point = current_point  # Store element start
 			last_quad_ctrl = None
 			prev_command = cmd
 
@@ -615,25 +663,24 @@ def convert_to_mse(svg_file):
 	mse_output = "mse_version: 0.3.5"
 
 	for element in reversed(elements):
-		if element["path_type"] == "path":
-			segments = build_segments(element["commands"])  # Use only the 'commands' field
-			if not segments:
-				continue
+		segments = build_segments(element["commands"])
+		if not segments:
+			continue
 
-			subpath_name = element["element_id"] if "element_id" in element else "unnamed_path"
+		element_name = element["element_id"] if "element_id" in element else "unnamed_path"
 
-			mse_output += f"""
+		mse_output += f"""
 part:
 	type: shape
-	name: {subpath_name}
+	name: {element_name}
 	combine: overlap
 """
-			mse_points = []
+		mse_points = []
 
-			for i, seg in enumerate(segments):
-				mse_points.append(format_segment(seg, i, segments, viewbox))
+		for i, seg in enumerate(segments):
+			mse_points.append(format_segment(seg, i, segments, viewbox))
 
-			mse_output += "\n" + "\n".join(mse_points)
+		mse_output += "\n" + "\n".join(mse_points)
 
 	return mse_output
 
