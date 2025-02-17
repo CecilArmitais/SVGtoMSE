@@ -1,6 +1,6 @@
 # Test files
-.svg
-.mse-symbol
+*.svg
+*.mse-symbol
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

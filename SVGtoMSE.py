@@ -30,35 +30,50 @@ import math
 
 def get_viewbox(svg_file):
 	"""
-	Extracts the viewBox attribute from an SVG file.
+	Extracts the viewBox attribute from an SVG file, with fallbacks.
 	
 	Parameters:
 	- svg_file: Path to the SVG file.
 	
 	Returns:
-	- A tuple (min_x, min_y, width, height) if viewBox exists.
-	- None if no viewBox is found.
+	- A tuple (min_x, min_y, width, height) if viewBox exists or is inferred.
 	"""
 	try:
 		tree = ET.parse(svg_file)
 		root = tree.getroot()
 
-		# The 'viewBox' attribute is in the <svg> tag
+		# Check for viewBox attribute
 		viewbox_str = root.get("viewBox")
-
 		if viewbox_str:
-			# Split the viewBox string into four float values
-			min_x, min_y, width, height = map(float, viewbox_str.split())
-			return min_x, min_y, width, height
-		else:
-			print("No viewBox attribute found in SVG.")
-			return None
+			try:
+				min_x, min_y, width, height = map(float, viewbox_str.split())
+				return min_x, min_y, width, height
+			except ValueError:
+				print("ERROR - Malformed viewBox attribute.")
+				return None
+
+		# Fallback: Try using width and height attributes
+		width = root.get("width")
+		height = root.get("height")
+
+		if width and height:
+			try:
+				width = float(width)
+				height = float(height)
+				return 0.0, 0.0, width, height
+			except ValueError:
+				print("ERROR - Malformed width/height attributes.")
+				return None
+
+		# Final fallback if all else fails
+		print("WARNING - No viewBox, width, or height found. Using default (0,0,100,100).")
+		return 0.0, 0.0, 100.0, 100.0
 
 	except ET.ParseError as e:
-		print(f"Error parsing SVG file: {e}")
+		print(f"ERROR - Failed to parse SVG file: {e}")
 		return None
 	except Exception as e:
-		print(f"Unexpected error: {e}")
+		print(f"ERROR - Unexpected issue: {e}")
 		return None
 
 def normalize_coordinates(x, y, viewbox):
@@ -266,8 +281,13 @@ def extract_elements(svg_file):
 		root = tree.getroot()
 
 		all_elements = []
-		path_count = 0  # Tracks unique IDs for paths
-		rect_count = 0  # Tracks unique IDs for rectangles
+
+		# Tracks unique identifiers for each element
+		path_count = 1
+		rect_count = 1
+		circle_count = 1
+		ellipse_count = 1
+		polygon_count = 1
 
 		for elem in root:
 			tag = elem.tag.replace("{http://www.w3.org/2000/svg}", "")  # Remove namespace
@@ -280,40 +300,37 @@ def extract_elements(svg_file):
 
 				# Assign a unique identifier to the parent path
 				parent_id = f"path_{path_count}"
-				path_type = "path"
+				path_count += 1
 
-				# Parse all commands from the d attribute.
+				# Parse commands and split into elements.
 				commands = parse_path_commands(d_attr)
-				
-				# Split commands into elements
 				elements = []
-				element_index = 0  # Unique identifier within the parent shape
-				
 				current_element = []
+				subpath_count = 1  # Tracks unique IDs for subpaths within a path
+				
 				for command in commands:
 					if command["cmd"] in ["M", "m"]:
 						# If current_element is not empty, a new moveto indicates a new element.
 						if current_element:
 							elements.append({
 								"parent_id": parent_id,
-								"element_id": f"{parent_id}_{element_index}",
-								"path_type": path_type,
+								"element_id": f"{parent_id}_{subpath_count}",
+								"path_type": "path",
 								"commands": current_element
 							})
-							element_index += 1
+							subpath_count += 1
 							current_element = []
 					current_element.append(command)
-				
+
 				if current_element:
 					elements.append({
 						"parent_id": parent_id,
-						"element_id": f"{parent_id}_{element_index}",
-						"path_type": path_type,
+						"element_id": f"{parent_id}_{subpath_count}",
+						"path_type": "path",
 						"commands": current_element
 					})
 				
 				all_elements.extend(elements)
-				path_count += 1  # Increment for the next path
 
 			elif tag == "rect":
 				x = float(elem.get("x", 0))
@@ -337,7 +354,7 @@ def extract_elements(svg_file):
 				ry = min(ry, height / 2)
 
 				parent_id = f"rect_{rect_count}"
-				path_type = "rectangle"
+				rect_count += 1
 
 				if rx == 0 and ry == 0:
 					# Simple rectangle (no rounding)
@@ -365,12 +382,99 @@ def extract_elements(svg_file):
 
 				all_elements.append({
 					"parent_id": parent_id,
-					"element_id": f"{parent_id}_0",
-					"path_type": path_type,
+					"element_id": f"{parent_id}",
+					"path_type": "rect",
 					"commands": commands
 				})
 
-				rect_count += 1
+			elif tag == "circle":
+				# Extract circle properties
+				cx, cy = float(elem.get("cx", 0)), float(elem.get("cy", 0))
+				r = float(elem.get("r", 0))
+
+				# Unique identifier
+				parent_id = f"circle_{circle_count}"
+				circle_count += 1
+
+				# Control point offset factor
+				k = 0.5522847498 * r
+
+				commands = [
+					{"cmd": "M", "args": [cx, cy - r]},  # Move to top
+					{"cmd": "C", "args": [cx + k, cy - r, cx + r, cy - k, cx + r, cy]},  # Top-right
+					{"cmd": "C", "args": [cx + r, cy + k, cx + k, cy + r, cx, cy + r]},  # Bottom-right
+					{"cmd": "C", "args": [cx - k, cy + r, cx - r, cy + k, cx - r, cy]},  # Bottom-left
+					{"cmd": "C", "args": [cx - r, cy - k, cx - k, cy - r, cx, cy - r]},  # Top-left
+					{"cmd": "Z", "args": []}  # Close path
+				]
+
+				all_elements.append({
+					"parent_id": parent_id,
+					"element_id": parent_id,
+					"path_type": "circle",
+					"commands": commands
+				})
+
+			elif tag == "ellipse":
+				# Ellipse logic using cubic Bézier curves
+				cx, cy = float(elem.get("cx", 0)), float(elem.get("cy", 0))
+				rx, ry = float(elem.get("rx", 0)), float(elem.get("ry", 0))
+
+				parent_id = f"ellipse_{ellipse_count}"
+				ellipse_count += 1
+
+				kx, ky = 0.5522847498 * rx, 0.5522847498 * ry
+
+				commands = [
+					{"cmd": "M", "args": [cx, cy - ry]},
+					{"cmd": "C", "args": [cx + kx, cy - ry, cx + rx, cy - ky, cx + rx, cy]},
+					{"cmd": "C", "args": [cx + rx, cy + ky, cx + kx, cy + ry, cx, cy + ry]},
+					{"cmd": "C", "args": [cx - kx, cy + ry, cx - rx, cy + ky, cx - rx, cy]},
+					{"cmd": "C", "args": [cx - rx, cy - ky, cx - kx, cy - ry, cx, cy - ry]},
+					{"cmd": "Z", "args": []}
+				]
+
+				all_elements.append({
+					"parent_id": parent_id,
+					"element_id": parent_id,
+					"path_type": "ellipse",
+					"commands": commands
+				})
+
+			elif tag == "polygon":
+				points_str = elem.get("points")
+				if not points_str:
+					print(f"Skipping <polygon> without 'points' attribute (polygon_{polygon_count}).")
+					continue
+
+				# Parse points: split on whitespace and commas.
+				points = []
+				for pt in points_str.strip().split():
+					coords = pt.split(',')
+					if len(coords) >= 2:
+						points.append((float(coords[0]), float(coords[1])))
+				if len(points) < 3:
+					print(f"Skipping <polygon> with insufficient points (polygon_{polygon_count}).")
+					continue
+
+				parent_id = f"polygon_{polygon_count}"
+				polygon_count += 1
+
+				commands = []
+				# Move to the first point.
+				commands.append({"cmd": "M", "args": [points[0][0], points[0][1]]})
+				# Line to each subsequent point.
+				for pt in points[1:]:
+					commands.append({"cmd": "L", "args": [pt[0], pt[1]]})
+				# Close the polygon.
+				commands.append({"cmd": "Z", "args": []})
+
+				all_elements.append({
+					"parent_id": parent_id,
+					"element_id": parent_id,
+					"path_type": "polygon",
+					"commands": commands
+				})
 
 		return all_elements
 
