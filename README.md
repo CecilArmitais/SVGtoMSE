@@ -1,16 +1,18 @@
 # SVG to MSE Converter
 
-A simple Python tool that converts SVG path data into the **MSE (Magic Set Editor) symbol format**.
+A simple Python tool that converts SVG files into the **MSE (Magic Set Editor) symbol format**.
 
 ---
 
 ## Features
-- Converts SVG paths into **MSE-compatible** symbol files.
-- Supports all path commands.
+- Converts SVG data into **MSE-compatible** symbol files.
+- Supports all path commands, basic shapes, transformations, and groupings.
 - Generates a `.mse-symbol` file for use with **Magic Set Editor**.
   
 **Limitations**:
-- Currently **does not support other SVG elements** such as `<circle>`, `<rect>`, `<polygon>`, etc. Only `<path>` elements with valid `d` attributes are converted.
+- Currently **does not support lines and strokes**.
+- Currently **does not support more uncommon SVG elements** such as text, patterns, and symbols.
+- Transparency must be **handled by the user**; the output will include subtractive layers, but the user must apply the subtract setting themselves.
 
 ---
 
@@ -19,16 +21,20 @@ A simple Python tool that converts SVG path data into the **MSE (Magic Set Edito
 1. **Download the latest release** of the [SVG to MSE Converter](https://github.com/CecilArmitais/SVGtoMSE/releases) (Windows `.exe` file).
 2. **No installation necessary** – Simply **download** the `.exe` file and drag and drop 1 or more SVGs onto it.
 
-   The first time you run, windows may pop up a warning. If running the exe makes you uncomfortable, you can download the script and run it manually:
-   - Ensure you have **Python 3.11.3** installed on your machine.
+   The first time you run, Windows may pop up a warning. If running the exe makes you uncomfortable, you can download the script and run it manually:
+   - Ensure you have **Python 3.11.3** or later installed on your machine.
    - Download the `SVGtoMSE.py` and the `SVGtoMSE.bat` files.
-   - Drag and drop your SVG onto `SVGtoMSE.bat`.
+   - Install the required dependencies by running the following command in your terminal:
+     ```sh
+     pip install -r requirements.txt
+     ```
+   - Drag and drop your SVG onto `SVGtoMSE.bat` to convert it.
 
 ---
 
 ## Usage
 
-A. **Drag and Drop** your SVG file onto the `SVGtoMSE.exe` (Windows) to convert the SVG path data to MSE format. The tool will output a `.mse-symbol` file in the same directory.
+A. **Drag and Drop** your SVG file onto the `SVGtoMSE.exe` (Windows) to convert the SVG data to MSE format. The tool will output a `.mse-symbol` file in the same directory.
 
 B. **Command Line Usage** (Optional):
    - Open a terminal and run:
@@ -36,15 +42,8 @@ B. **Command Line Usage** (Optional):
      SVGtoMSE.exe <path_to_svg_file>
      ```
 
-**Supported Input Format**:
-   - The SVG file should contain `<path>` elements with valid `d` attributes.
-   - Example input:
-     ```xml
-     <path d="M10,10 C20,5 30,15 40,20"/>
-     ```
-
 **Output**:
-   - The program will generate a `.mse-symbol` file with relative coordinates formatted as required by the Magic Set Editor.
+   - The program will generate a `.mse-symbol` file with coordinates formatted as required by the Magic Set Editor.
    - Example output (partial):
      ```
 	 mse_version: 0.3.5
@@ -68,13 +67,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-## Troubleshooting
-
-- **ERROR - Unsupported elements**: This message appears when the SVG contains elements other than `<path>` (e.g., `<circle>`, `<rect>`). These elements are skipped, but any other paths within the file are still converted successfully.
-
----
-
 ## Contributing
 
 Feel free to fork this repository and submit pull requests with improvements or fixes. All contributions are welcome!
-
