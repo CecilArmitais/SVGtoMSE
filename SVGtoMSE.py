@@ -29,6 +29,13 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import math
 
+#Global Counters
+path_count = 1
+rect_count = 1
+circle_count = 1
+ellipse_count = 1
+polygon_count = 1
+
 def get_viewbox(svg_file):
 	"""
 	Extracts the viewBox attribute from an SVG file, with fallbacks.
@@ -295,30 +302,27 @@ def extract_elements(svg_file):
 
 		all_elements = []
 
-		# Tracks unique identifiers for each element
-		path_count = 1
-		rect_count = 1
-		circle_count = 1
-		ellipse_count = 1
-		polygon_count = 1
+		def process_element(elem, parent_transformations):
+			"""Helper function to process an individual element."""
+			global path_count, rect_count, circle_count, ellipse_count, polygon_count 
 
-		for elem in root:
 			tag = elem.tag.replace("{http://www.w3.org/2000/svg}", "")  # Remove namespace
+
+			transform_attr = elem.get("transform")
+			transformations = parent_transformations + parse_transformations(transform_attr) if transform_attr else parent_transformations
 
 			if tag == "path":
 				d_attr = elem.get("d")
 				if not d_attr:
 					print(f"Skipping a <path> without 'd' attribute (path_{path_count}).")
-					continue
-
+					return []
+				
 				# Assign a unique identifier to the parent path
 				parent_id = f"path_{path_count}"
 				path_count += 1
 
 				# Parse commands and split into elements.
 				commands = parse_path_commands(d_attr)
-				transform_attr = elem.get("transform")
-				transformations = parse_transformations(transform_attr) if transform_attr else []
 
 				elements = []
 				current_element = []
@@ -358,8 +362,6 @@ def extract_elements(svg_file):
 				height = float(elem.get("height", 0))
 				rx = elem.get("rx")
 				ry = elem.get("ry")
-				transform_attr = elem.get("transform")
-				transformations = parse_transformations(transform_attr) if transform_attr else []
 
 				if rx is None and ry is None:
 					rx, ry = 0, 0
@@ -413,8 +415,6 @@ def extract_elements(svg_file):
 				# Extract circle properties
 				cx, cy = float(elem.get("cx", 0)), float(elem.get("cy", 0))
 				r = float(elem.get("r", 0))
-				transform_attr = elem.get("transform")
-				transformations = parse_transformations(transform_attr) if transform_attr else []
 
 				# Unique identifier
 				parent_id = f"circle_{circle_count}"
@@ -444,8 +444,6 @@ def extract_elements(svg_file):
 				# Extract ellipse properties
 				cx, cy = float(elem.get("cx", 0)), float(elem.get("cy", 0))
 				rx, ry = float(elem.get("rx", 0)), float(elem.get("ry", 0))
-				transform_attr = elem.get("transform")
-				transformations = parse_transformations(transform_attr) if transform_attr else []
 
 				parent_id = f"ellipse_{ellipse_count}"
 				ellipse_count += 1
@@ -472,11 +470,9 @@ def extract_elements(svg_file):
 			elif tag == "polygon":
 				# Extract polygon properties
 				points_str = elem.get("points")
-				transform_attr = elem.get("transform")
-				transformations = parse_transformations(transform_attr) if transform_attr else []
 				if not points_str:
 					print(f"Skipping <polygon> without 'points' attribute (polygon_{polygon_count}).")
-					continue
+					return []
 
 				# Parse points
 				points = []
@@ -486,7 +482,7 @@ def extract_elements(svg_file):
 						points.append((float(coords[0]), float(coords[1])))
 				if len(points) < 3:
 					print(f"Skipping <polygon> with insufficient points (polygon_{polygon_count}).")
-					continue
+					return []
 
 				parent_id = f"polygon_{polygon_count}"
 				polygon_count += 1
@@ -508,6 +504,34 @@ def extract_elements(svg_file):
 					"transformations": transformations
 				})
 
+			return []
+
+		def process_groups(elem, group_transformations):
+			"""Process elements inside groups recursively."""
+			tag = elem.tag.replace("{http://www.w3.org/2000/svg}", "")  # Remove namespace
+			elements = []  # To hold the processed elements for this group
+			# Do not render tags in definions
+			if tag == "defs":
+				return []
+			elif tag in {"g", "svg", "clipPath", "mask"}:
+				# Process group tag (apply transformations from the group)
+				transform_attr = elem.get("transform")
+				new_group_transformations = list(group_transformations)
+				if transform_attr:
+					new_group_transformations.extend(parse_transformations(transform_attr))
+
+				# Process all child elements of the group
+				for child in elem:
+					elements.extend(process_groups(child, new_group_transformations))  # Recursively process child elements
+			else:
+				# Process non-group elements (paths, rectangles, etc.) within this group
+				elements.extend(process_element(elem, group_transformations))  # Use the group transformations here
+
+			return elements
+
+		# Start processing the SVG tree from the root
+		for elem in root:
+			all_elements.extend(process_groups(elem, []))  # Process the root element (groups and non-groups)
 		return all_elements
 
 	except ET.ParseError as e:
@@ -518,79 +542,79 @@ def extract_elements(svg_file):
 		return None
 
 def apply_transformations(point, transformations):
-    """
-    Applies transformations to a single (x, y) point.
-    """
-    x, y = point
-    point = np.array([x, y, 1])  # Homogeneous coordinates
+	"""
+	Applies transformations to a single (x, y) point.
+	"""
+	x, y = point
+	point = np.array([x, y, 1])  # Homogeneous coordinates
 
-    for transform in reversed(transformations):  # Reverse order for correct application
-        t_type, args = transform["type"], transform["args"]
+	for transform in reversed(transformations):  # Reverse order for correct application
+		t_type, args = transform["type"], transform["args"]
 
-        if t_type == "translate":
-            tx, ty = args[0], args[1] if len(args) > 1 else 0
-            matrix = np.array([[1, 0, tx], [0, 1, ty], [0, 0, 1]])
+		if t_type == "translate":
+			tx, ty = args[0], args[1] if len(args) > 1 else 0
+			matrix = np.array([[1, 0, tx], [0, 1, ty], [0, 0, 1]])
 
-        elif t_type == "scale":
-            sx, sy = args[0], args[1] if len(args) > 1 else args[0]
-            matrix = np.array([[sx, 0, 0], [0, sy, 0], [0, 0, 1]])
+		elif t_type == "scale":
+			sx, sy = args[0], args[1] if len(args) > 1 else args[0]
+			matrix = np.array([[sx, 0, 0], [0, sy, 0], [0, 0, 1]])
 
-        elif t_type == "rotate":
-            angle = np.radians(args[0])
-            if len(args) == 3:  # Rotate around (cx, cy)
-                cx, cy = args[1], args[2]
-                translation1 = np.array([[1, 0, -cx], [0, 1, -cy], [0, 0, 1]])
-                rotation = np.array([[np.cos(angle), -np.sin(angle), 0],
-                                     [np.sin(angle), np.cos(angle), 0],
-                                     [0, 0, 1]])
-                translation2 = np.array([[1, 0, cx], [0, 1, cy], [0, 0, 1]])
-                matrix = translation2 @ rotation @ translation1
-            else:
-                matrix = np.array([[np.cos(angle), -np.sin(angle), 0],
-                                   [np.sin(angle), np.cos(angle), 0],
-                                   [0, 0, 1]])
+		elif t_type == "rotate":
+			angle = np.radians(args[0])
+			if len(args) == 3:  # Rotate around (cx, cy)
+				cx, cy = args[1], args[2]
+				translation1 = np.array([[1, 0, -cx], [0, 1, -cy], [0, 0, 1]])
+				rotation = np.array([[np.cos(angle), -np.sin(angle), 0],
+									 [np.sin(angle), np.cos(angle), 0],
+									 [0, 0, 1]])
+				translation2 = np.array([[1, 0, cx], [0, 1, cy], [0, 0, 1]])
+				matrix = translation2 @ rotation @ translation1
+			else:
+				matrix = np.array([[np.cos(angle), -np.sin(angle), 0],
+								   [np.sin(angle), np.cos(angle), 0],
+								   [0, 0, 1]])
 
-        elif t_type == "skewX":
-            angle = np.radians(args[0])
-            matrix = np.array([[1, np.tan(angle), 0], [0, 1, 0], [0, 0, 1]])
+		elif t_type == "skewX":
+			angle = np.radians(args[0])
+			matrix = np.array([[1, np.tan(angle), 0], [0, 1, 0], [0, 0, 1]])
 
-        elif t_type == "skewY":
-            angle = np.radians(args[0])
-            matrix = np.array([[1, 0, 0], [np.tan(angle), 1, 0], [0, 0, 1]])
+		elif t_type == "skewY":
+			angle = np.radians(args[0])
+			matrix = np.array([[1, 0, 0], [np.tan(angle), 1, 0], [0, 0, 1]])
 
-        elif t_type == "matrix":
-            if len(args) == 6:
-                a, b, c, d, e, f = args
-                matrix = np.array([[a, c, e], [b, d, f], [0, 0, 1]])
-            else:
-                continue  # Invalid matrix
+		elif t_type == "matrix":
+			if len(args) == 6:
+				a, b, c, d, e, f = args
+				matrix = np.array([[a, c, e], [b, d, f], [0, 0, 1]])
+			else:
+				continue  # Invalid matrix
 
-        else:
-            continue  # Unsupported transformation
+		else:
+			continue  # Unsupported transformation
 
-        point = matrix @ point  # Apply transformation
+		point = matrix @ point  # Apply transformation
 
-    return point[0], point[1]
+	return point[0], point[1]
 
 def apply_transformations_to_segments(segments, transformations):
-    """
-    Applies transformations to each coordinate in a segment list.
-    """
-    transformed_segments = []
-    for seg in segments:
-        if seg[0] == "C":  # Bezier curve
-            t_start = apply_transformations(seg[1], transformations)
-            t_c1 = apply_transformations(seg[2], transformations)
-            t_c2 = apply_transformations(seg[3], transformations)
-            t_end = apply_transformations(seg[4], transformations)
-            transformed_segments.append(("C", t_start, t_c1, t_c2, t_end))
+	"""
+	Applies transformations to each coordinate in a segment list.
+	"""
+	transformed_segments = []
+	for seg in segments:
+		if seg[0] == "C":  # Bezier curve
+			t_start = apply_transformations(seg[1], transformations)
+			t_c1 = apply_transformations(seg[2], transformations)
+			t_c2 = apply_transformations(seg[3], transformations)
+			t_end = apply_transformations(seg[4], transformations)
+			transformed_segments.append(("C", t_start, t_c1, t_c2, t_end))
 
-        elif seg[0] == "L":  # Line
-            t_start = apply_transformations(seg[1], transformations)
-            t_end = apply_transformations(seg[2], transformations)
-            transformed_segments.append(("L", t_start, t_end))
+		elif seg[0] == "L":  # Line
+			t_start = apply_transformations(seg[1], transformations)
+			t_end = apply_transformations(seg[2], transformations)
+			transformed_segments.append(("L", t_start, t_end))
 
-    return transformed_segments
+	return transformed_segments
 
 def build_segments(element):
 	"""
