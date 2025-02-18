@@ -26,6 +26,7 @@ import sys
 import os
 import re
 import xml.etree.ElementTree as ET
+import numpy as np
 import math
 
 def get_viewbox(svg_file):
@@ -257,7 +258,19 @@ def arc_to_cubic(x1, y1, rx, ry, phi_deg, large_arc_flag, sweep_flag, x2, y2):
 		t += delta
 	return seg_list
 
+def parse_transformations(transform_str):
+	"""
+	Parses the 'transform' attribute from an SVG element and returns a list of transformations.
+	Each transformation is represented as a dictionary with the type and arguments.
+	"""
+	transform_list = []
+	transform_regex = re.findall(r"(\w+)\(([^)]+)\)", transform_str)
 
+	for t_type, values in transform_regex:
+		args = list(map(float, values.replace(",", " ").split()))
+		transform_list.append({"type": t_type, "args": args})
+
+	return transform_list
 
 #Refactored parts of convert_to_mse():
 
@@ -304,6 +317,9 @@ def extract_elements(svg_file):
 
 				# Parse commands and split into elements.
 				commands = parse_path_commands(d_attr)
+				transform_attr = elem.get("transform")
+				transformations = parse_transformations(transform_attr) if transform_attr else []
+
 				elements = []
 				current_element = []
 				subpath_count = 1  # Tracks unique IDs for subpaths within a path
@@ -316,7 +332,8 @@ def extract_elements(svg_file):
 								"parent_id": parent_id,
 								"element_id": f"{parent_id}_{subpath_count}",
 								"path_type": "path",
-								"commands": current_element
+								"commands": current_element,
+								"transformations": transformations
 							})
 							subpath_count += 1
 							current_element = []
@@ -327,18 +344,22 @@ def extract_elements(svg_file):
 						"parent_id": parent_id,
 						"element_id": f"{parent_id}_{subpath_count}",
 						"path_type": "path",
-						"commands": current_element
+						"commands": current_element,
+						"transformations": transformations
 					})
 				
 				all_elements.extend(elements)
 
 			elif tag == "rect":
+				# Extract rectangle properties
 				x = float(elem.get("x", 0))
 				y = float(elem.get("y", 0))
 				width = float(elem.get("width", 0))
 				height = float(elem.get("height", 0))
 				rx = elem.get("rx")
 				ry = elem.get("ry")
+				transform_attr = elem.get("transform")
+				transformations = parse_transformations(transform_attr) if transform_attr else []
 
 				if rx is None and ry is None:
 					rx, ry = 0, 0
@@ -384,13 +405,16 @@ def extract_elements(svg_file):
 					"parent_id": parent_id,
 					"element_id": f"{parent_id}",
 					"path_type": "rect",
-					"commands": commands
+					"commands": commands,
+					"transformations": transformations
 				})
 
 			elif tag == "circle":
 				# Extract circle properties
 				cx, cy = float(elem.get("cx", 0)), float(elem.get("cy", 0))
 				r = float(elem.get("r", 0))
+				transform_attr = elem.get("transform")
+				transformations = parse_transformations(transform_attr) if transform_attr else []
 
 				# Unique identifier
 				parent_id = f"circle_{circle_count}"
@@ -412,13 +436,16 @@ def extract_elements(svg_file):
 					"parent_id": parent_id,
 					"element_id": parent_id,
 					"path_type": "circle",
-					"commands": commands
+					"commands": commands,
+					"transformations": transformations
 				})
 
 			elif tag == "ellipse":
-				# Ellipse logic using cubic Bézier curves
+				# Extract ellipse properties
 				cx, cy = float(elem.get("cx", 0)), float(elem.get("cy", 0))
 				rx, ry = float(elem.get("rx", 0)), float(elem.get("ry", 0))
+				transform_attr = elem.get("transform")
+				transformations = parse_transformations(transform_attr) if transform_attr else []
 
 				parent_id = f"ellipse_{ellipse_count}"
 				ellipse_count += 1
@@ -438,16 +465,20 @@ def extract_elements(svg_file):
 					"parent_id": parent_id,
 					"element_id": parent_id,
 					"path_type": "ellipse",
-					"commands": commands
+					"commands": commands,
+					"transformations": transformations
 				})
 
 			elif tag == "polygon":
+				# Extract polygon properties
 				points_str = elem.get("points")
+				transform_attr = elem.get("transform")
+				transformations = parse_transformations(transform_attr) if transform_attr else []
 				if not points_str:
 					print(f"Skipping <polygon> without 'points' attribute (polygon_{polygon_count}).")
 					continue
 
-				# Parse points: split on whitespace and commas.
+				# Parse points
 				points = []
 				for pt in points_str.strip().split():
 					coords = pt.split(',')
@@ -473,7 +504,8 @@ def extract_elements(svg_file):
 					"parent_id": parent_id,
 					"element_id": parent_id,
 					"path_type": "polygon",
-					"commands": commands
+					"commands": commands,
+					"transformations": transformations
 				})
 
 		return all_elements
@@ -484,6 +516,81 @@ def extract_elements(svg_file):
 	except Exception as e:
 		print(f"Unexpected error: {e}")
 		return None
+
+def apply_transformations(point, transformations):
+    """
+    Applies transformations to a single (x, y) point.
+    """
+    x, y = point
+    point = np.array([x, y, 1])  # Homogeneous coordinates
+
+    for transform in reversed(transformations):  # Reverse order for correct application
+        t_type, args = transform["type"], transform["args"]
+
+        if t_type == "translate":
+            tx, ty = args[0], args[1] if len(args) > 1 else 0
+            matrix = np.array([[1, 0, tx], [0, 1, ty], [0, 0, 1]])
+
+        elif t_type == "scale":
+            sx, sy = args[0], args[1] if len(args) > 1 else args[0]
+            matrix = np.array([[sx, 0, 0], [0, sy, 0], [0, 0, 1]])
+
+        elif t_type == "rotate":
+            angle = np.radians(args[0])
+            if len(args) == 3:  # Rotate around (cx, cy)
+                cx, cy = args[1], args[2]
+                translation1 = np.array([[1, 0, -cx], [0, 1, -cy], [0, 0, 1]])
+                rotation = np.array([[np.cos(angle), -np.sin(angle), 0],
+                                     [np.sin(angle), np.cos(angle), 0],
+                                     [0, 0, 1]])
+                translation2 = np.array([[1, 0, cx], [0, 1, cy], [0, 0, 1]])
+                matrix = translation2 @ rotation @ translation1
+            else:
+                matrix = np.array([[np.cos(angle), -np.sin(angle), 0],
+                                   [np.sin(angle), np.cos(angle), 0],
+                                   [0, 0, 1]])
+
+        elif t_type == "skewX":
+            angle = np.radians(args[0])
+            matrix = np.array([[1, np.tan(angle), 0], [0, 1, 0], [0, 0, 1]])
+
+        elif t_type == "skewY":
+            angle = np.radians(args[0])
+            matrix = np.array([[1, 0, 0], [np.tan(angle), 1, 0], [0, 0, 1]])
+
+        elif t_type == "matrix":
+            if len(args) == 6:
+                a, b, c, d, e, f = args
+                matrix = np.array([[a, c, e], [b, d, f], [0, 0, 1]])
+            else:
+                continue  # Invalid matrix
+
+        else:
+            continue  # Unsupported transformation
+
+        point = matrix @ point  # Apply transformation
+
+    return point[0], point[1]
+
+def apply_transformations_to_segments(segments, transformations):
+    """
+    Applies transformations to each coordinate in a segment list.
+    """
+    transformed_segments = []
+    for seg in segments:
+        if seg[0] == "C":  # Bezier curve
+            t_start = apply_transformations(seg[1], transformations)
+            t_c1 = apply_transformations(seg[2], transformations)
+            t_c2 = apply_transformations(seg[3], transformations)
+            t_end = apply_transformations(seg[4], transformations)
+            transformed_segments.append(("C", t_start, t_c1, t_c2, t_end))
+
+        elif seg[0] == "L":  # Line
+            t_start = apply_transformations(seg[1], transformations)
+            t_end = apply_transformations(seg[2], transformations)
+            transformed_segments.append(("L", t_start, t_end))
+
+    return transformed_segments
 
 def build_segments(element):
 	"""
@@ -507,8 +614,9 @@ def build_segments(element):
 	start_point = None  # Store the first point of a element
 	last_quad_ctrl = None  # For smooth quadratic
 	prev_command = None  # For S/s and T/t reflection
+	commands = element["commands"]
 
-	for command in element:
+	for command in commands:
 		cmd = command["cmd"]
 		args = command["args"]
 
@@ -682,6 +790,10 @@ def build_segments(element):
 		else:
 			# Skip any unsupported command.
 			continue
+
+	if "transformations" in element:
+		segments = apply_transformations_to_segments(segments, element["transformations"])
+
 	return segments
 
 def format_segment(seg, index, segments, viewbox):
@@ -767,7 +879,7 @@ def convert_to_mse(svg_file):
 	mse_output = "mse_version: 0.3.5"
 
 	for element in reversed(elements):
-		segments = build_segments(element["commands"])
+		segments = build_segments(element)
 		if not segments:
 			continue
 
