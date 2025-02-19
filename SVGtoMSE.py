@@ -188,82 +188,83 @@ def arc_segment(cx, cy, rx, ry, phi, t1, t2):
 	end = transform((x2, y2))
 	return c1, c2, end
 
-def arc_to_cubic(x1, y1, rx, ry, phi_deg, large_arc_flag, sweep_flag, x2, y2):
-	"""
-	Converts an elliptical arc (from (x1,y1) to (x2,y2)) with parameters rx, ry, 
-	x-axis rotation (in degrees), large_arc_flag, and sweep_flag into one or more cubic Bézier segments.
+def arc_to_cubic(rx, ry, x_axis_rotation, large_arc_flag, sweep_flag, end_x, end_y, start_x, start_y):
+	def radians(degrees):
+		return degrees * (math.pi / 180)
 	
-	Returns a list of segments, each of the form: ("C", start, c1, c2, end)
-	"""
-	# Convert phi from degrees to radians.
-	phi = math.radians(phi_deg)
-	
-	# Step 1: Compute (x1', y1') – the coordinates of the start point in the transformed coordinate system.
-	dx = (x1 - x2) / 2.0
-	dy = (y1 - y2) / 2.0
-	cos_phi = math.cos(phi)
-	sin_phi = math.sin(phi)
-	x1p = cos_phi * dx + sin_phi * dy
-	y1p = -sin_phi * dx + cos_phi * dy
+	def rotate_point(x, y, angle):
+		"""Rotate a point by a given angle (in radians)."""
+		cos_a = math.cos(angle)
+		sin_a = math.sin(angle)
+		return x * cos_a - y * sin_a, x * sin_a + y * cos_a
 
-	# Ensure radii are positive.
-	rx = abs(rx)
-	ry = abs(ry)
+	# Step 1: Handle radii issues
+	rx, ry = abs(rx), abs(ry)
+	if rx == 0 or ry == 0:
+		return [{"cmd": "L", "args": [end_x, end_y]}]  # Treat as a straight line
 
-	# Step 2: Correct radii if they are too small.
-	lambda_val = (x1p**2)/(rx**2) + (y1p**2)/(ry**2)
-	if lambda_val > 1:
-		factor = math.sqrt(lambda_val)
-		rx *= factor
-		ry *= factor
+	# Step 2: Convert to center parameterization
+	dx = (start_x - end_x) / 2
+	dy = (start_y - end_y) / 2
+	x_rot = radians(x_axis_rotation)
+	x1p, y1p = rotate_point(dx, dy, -x_rot)
 
-	# Step 3: Compute center coordinates in the transformed system.
+	# Ensure radii are large enough
+	radius_check = (x1p**2) / (rx**2) + (y1p**2) / (ry**2)
+	if radius_check > 1:
+		scale = math.sqrt(radius_check)
+		rx *= scale
+		ry *= scale
+
+	# Step 3: Find the center of the ellipse
 	sign = -1 if large_arc_flag == sweep_flag else 1
-	numerator = rx**2 * ry**2 - rx**2 * y1p**2 - ry**2 * x1p**2
-	# Avoid negative under the square root due to floating point errors.
-	denom = rx**2 * y1p**2 + ry**2 * x1p**2
-	factor = sign * math.sqrt(max(0, numerator/denom)) if denom != 0 else 0
-	cxp = factor * (rx * y1p) / ry
-	cyp = factor * (-ry * x1p) / rx
+	cxp = sign * math.sqrt(abs((rx**2 * ry**2 - rx**2 * y1p**2 - ry**2 * x1p**2) / (rx**2 * y1p**2 + ry**2 * x1p**2))) * (rx * y1p / ry)
+	cyp = sign * math.sqrt(abs((rx**2 * ry**2 - rx**2 * y1p**2 - ry**2 * x1p**2) / (rx**2 * y1p**2 + ry**2 * x1p**2))) * (-ry * x1p / rx)
+	
+	cx, cy = rotate_point(cxp, cyp, x_rot)
+	cx += (start_x + end_x) / 2
+	cy += (start_y + end_y) / 2
 
-	# Step 4: Compute the center in the original coordinate system.
-	cx = cos_phi * cxp - sin_phi * cyp + (x1 + x2)/2.0
-	cy = sin_phi * cxp + cos_phi * cyp + (y1 + y2)/2.0
+	# Step 4: Compute angles
+	def angle_between(v1, v2):
+		"""Compute angle between two vectors."""
+		dot = v1[0] * v2[0] + v1[1] * v2[1]
+		mag = math.sqrt(v1[0]**2 + v1[1]**2) * math.sqrt(v2[0]**2 + v2[1]**2)
+		return math.acos(max(-1, min(1, dot / mag))) * (-1 if (v1[0] * v2[1] - v1[1] * v2[0]) < 0 else 1)
 
-	# Step 5: Compute the start and delta angles.
-	def vector_angle(u, v):
-		dot = u[0]*v[0] + u[1]*v[1]
-		len_u = math.hypot(u[0], u[1])
-		len_v = math.hypot(v[0], v[1])
-		# Clamp dot/(len_u*len_v) between -1 and 1 to avoid domain errors.
-		angle = math.acos(max(min(dot/(len_u*len_v), 1), -1))
-		if u[0]*v[1] - u[1]*v[0] < 0:
-			return -angle
-		return angle
+	start_angle = angle_between([1, 0], [(x1p - cxp) / rx, (y1p - cyp) / ry])
+	delta_angle = angle_between([(x1p - cxp) / rx, (y1p - cyp) / ry], [(end_x - cx) / rx, (end_y - cy) / ry])
+	
+	if not sweep_flag and delta_angle > 0:
+		delta_angle -= 2 * math.pi
+	elif sweep_flag and delta_angle < 0:
+		delta_angle += 2 * math.pi
 
-	# Compute angle between (1,0) and ( (x1p-cxp)/rx, (y1p-cyp)/ry ).
-	v1 = ((x1p - cxp)/rx, (y1p - cyp)/ry)
-	v2 = ((-x1p - cxp)/rx, (-y1p - cyp)/ry)
-	theta1 = vector_angle((1,0), v1)
-	delta_theta = vector_angle(v1, v2)
+	num_segments = max(1, int(math.ceil(abs(delta_angle) / (math.pi / 2))))  # Split into 90-degree segments
+	segment_angle = delta_angle / num_segments
 
-	if not sweep_flag and delta_theta > 0:
-		delta_theta -= 2 * math.pi
-	elif sweep_flag and delta_theta < 0:
-		delta_theta += 2 * math.pi
-
-	# Step 6: Determine the number of segments (each segment at most pi/2).
-	num_segments = int(math.ceil(abs(delta_theta) / (math.pi/2)))
-	seg_list = []
-	delta = delta_theta / num_segments
-	t = theta1
-	current = (x1, y1)
+	# Step 5: Convert each arc segment to a cubic Bézier curve
+	arc_commands = []
 	for i in range(num_segments):
-		c1, c2, ep = arc_segment(cx, cy, rx, ry, phi, t, t+delta)
-		seg_list.append(("C", current, c1, c2, ep))
-		current = ep
-		t += delta
-	return seg_list
+		angle1 = start_angle + i * segment_angle
+		angle2 = start_angle + (i + 1) * segment_angle
+		cos_a1, sin_a1 = math.cos(angle1), math.sin(angle1)
+		cos_a2, sin_a2 = math.cos(angle2), math.sin(angle2)
+
+		x1 = cx + rx * cos_a1
+		y1 = cy + ry * sin_a1
+		x2 = cx + rx * cos_a2
+		y2 = cy + ry * sin_a2
+
+		alpha = math.tan((angle2 - angle1) / 4) * 4 / 3
+		control1_x = x1 - alpha * rx * sin_a1
+		control1_y = y1 + alpha * ry * cos_a1
+		control2_x = x2 + alpha * rx * sin_a2
+		control2_y = y2 - alpha * ry * cos_a2
+
+		arc_commands.append({"cmd": "C", "args": [control1_x, control1_y, control2_x, control2_y, x2, y2]})
+
+	return arc_commands
 
 def parse_transformations(transform_str):
 	"""
@@ -278,6 +279,465 @@ def parse_transformations(transform_str):
 		transform_list.append({"type": t_type, "args": args})
 
 	return transform_list
+
+def calculate_winding_order(commands):
+	"""
+	Calculate the winding order of a path based on its commands.
+	Returns a positive value if the path is clockwise, and negative if counterclockwise.
+	"""
+	area = 0
+	n = len(commands)
+	last_x, last_y = 0, 0  # Initialize the starting point of the path
+	
+	for i in range(n):
+		cmd = commands[i]["cmd"]
+		args = commands[i]["args"]
+
+		if cmd in ["M", "L", "T", "S", "C", "Q", "A"]:
+			# Absolute commands: take the last two args as coordinates
+			x1, y1 = args[-2], args[-1]
+		elif cmd in ["m", "l", "t", "s", "c", "q", "a"]:
+			# Relative commands: add to the last coordinates (based on previous position)
+			x1, y1 = last_x + args[-2], last_y + args[-1]
+		elif cmd in ["H"]:
+			# Horizontal line, only needs the x-coordinate, use the previous y
+			x1, y1 = args[0], last_y
+		elif cmd in ["V"]:
+			# Vertical line, only needs the y-coordinate, use the previous x
+			x1, y1 = last_x, args[0]
+		elif cmd == "Z":
+			# Close path, return to the starting point
+			x1, y1 = last_x, last_y
+		else:
+			continue  # If command is not recognized, skip (e.g., `m`, `l`, `z`, etc.)
+
+		# Update the area for winding order
+		# Area formula: (x1 * y2 - x2 * y1)
+		area += last_x * y1 - x1 * last_y
+
+		# Update the last coordinates to the current ones
+		last_x, last_y = x1, y1
+	
+	return area
+
+def check_visibility(elem, parent_transparency):
+	# Check fill and opacity for transparency/visibility
+	fill = elem.get("fill", "undefined")
+	if fill == "undefined":
+		fill = parent_transparency["fill"]
+	base_opacity = float(elem.get("opacity", -1))
+	if base_opacity == -1:
+		opacity = parent_transparency["opacity"]
+	else:
+		opacity = base_opacity * parent_transparency["opacity"]
+	visibility = "invisible"  # Default visibility
+
+	# Determine transparency status
+	if fill != "none" and opacity == 1.0:
+		visibility = "visible"
+	elif fill != "none" and opacity < 1.0:
+		visibility = "border"
+	elif fill == "none" or opacity == 0.0:
+		visibility = "invisible"
+
+	return visibility
+
+def apply_masks_to_element(element):
+	masked_element = element
+	return [masked_element]
+
+def convert_commands(commands):
+	current_x, current_y = 0, 0  # Starting position (you can adjust if there's an initial position)
+	prev_command = None  # To store the last command processed
+	prev_control_x, prev_control_y = None, None
+	converted_commands = []
+
+	for command in commands:
+		cmd = command["cmd"]
+		args = command["args"]
+		
+		if cmd.upper() == "M":  # Relative move, adjust coordinates based on the current position
+			# Parse arguments
+			end_x, end_y = args
+			if cmd == "m":
+				end_x += current_x
+				end_y += current_y
+			# Update information for the next command
+			current_x, current_y, prev_command = end_x, end_y, command["cmd"]
+			# Set converted information
+			converted_commands.append({"cmd": "M", "args": [end_x, end_y]})
+			
+		elif cmd.upper() in ["L", "H", "V"]:  # Relative line, convert to absolute
+			# Parse arguments
+			if cmd.upper() == "H":
+				end_x = args[0]
+				end_y = current_y
+			elif cmd.upper() == "V":
+				end_x = current_x
+				end_y = args[0]
+			else:
+				end_x, end_y = args
+			if cmd in ["l", "h", "v"]:
+				end_x += current_x
+				end_y += current_y
+			# Update information for the next command
+			current_x, current_y, prev_command = end_x, end_y, command["cmd"]
+			# Set converted information
+			converted_commands.append({"cmd": "L", "args": [end_x, end_y]})
+			
+		elif cmd.upper() == "C":  # Relative cubic Bezier curve, convert to absolute
+			# Parse arguments
+			control1_x, control1_y, control2_x, control2_y, end_x, end_y = args
+			if cmd == "c":
+				control1_x += current_x
+				control1_y += current_y
+				control2_x += current_x
+				control2_y += current_y
+				end_x += current_x
+				end_y += current_y
+			# Update information for the next command
+			current_x, current_y, prev_control_x, prev_control_y, prev_command = end_x, end_y, control2_x, control2_y, command["cmd"]
+			# Set converted information
+			converted_commands.append({"cmd": "C", "args": [control1_x, control1_y, control2_x, control2_y, end_x, end_y]})
+			
+		elif cmd in ["S", "s"]:  # Cubic Bezier curves
+			# Parse arguments
+			control2_x, control2_y, end_x, end_y = args
+			if cmd == "s": # Relative
+				control2_x += current_x
+				control2_y += current_y
+				end_x += current_x
+				end_y += current_y
+			if prev_command.upper() in ["C", "S"]:
+				control1_x = 2 * current_x - prev_control_x
+				control1_y = 2 * current_y - prev_control_y
+			else:
+				control1_x, control1_y = current_x, current_y
+			# Update information for the next command
+			current_x, current_y, prev_control_x, prev_control_y, prev_command = end_x, end_y, control2_x, control2_y, command["cmd"]
+			# Set converted information
+			converted_commands.append({"cmd": "C", "args": [control1_x, control1_y, control2_x, control2_y, end_x, end_y]})
+			
+		elif cmd.upper() in ["Q", "T"]: # Quadratic Bezier curves
+			# Parse arguments
+			if cmd.upper == "Q":
+				control_x, control_y, end_x, end_y = args
+				if cmd == "q":
+					control_x += current_x
+					control_y += current_y
+					end_x += current_x
+					end_y += current_y
+			else: # Smooth
+				end_x, end_y = args
+				if cmd == "t": #relative
+					end_x += current_x
+					end_y += current_y
+				if prev_command.upper() in ["Q", "T"]:
+					control_x = 2 * current_x - prev_control_x
+					control_y = 2 * current_y - prev_control_y
+				else:
+					control_x, control_y = current_x, current_y
+			control1_x = current_x + (2 / 3) * (control_x - current_x)
+			control1_y = current_y + (2 / 3) * (control_y - current_y)
+			control2_x = end_x + (2 / 3) * (control_x - end_x)
+			control2_y = end_y + (2 / 3) * (control_y - end_y)
+			# Update information for the next line
+			current_x, current_y, prev_control_x, prev_control_y, prev_command = end_x, end_y, control2_x, control2_y, command["cmd"]
+			# Set converted information
+			converted_commands.append({"cmd": "C", "args": [control1_x, control1_y, control2_x, control2_y, end_x, end_y]})
+
+		elif cmd.upper() == "A":  # Arcs
+			# Parse arguments
+			rx, ry, x_axis_rotation, large_arc_flag, sweep_flag, end_x, end_y = args
+			if cmd == "a":  # Relative
+				end_x += current_x
+				end_y += current_y
+			arc_commands = arc_to_cubic(rx, ry, x_axis_rotation, large_arc_flag, sweep_flag, end_x, end_y, current_x, current_y)
+			# Update information for the next line
+			current_x, current_y, prev_command = end_x, end_y, control2_x, control2_y, command["cmd"]
+			# Set converted information
+			converted_commands.extend(arc_commands)
+
+		elif cmd.upper() == "Z":
+			converted_commands.append({"cmd": "Z", "args": []})
+			
+	return converted_commands
+
+def process_element(elem, parent_transformations, parent_transparency, parent_masks):
+	"""Function to process an individual element and return its element(s)."""
+	global path_count, rect_count, circle_count, ellipse_count, polygon_count
+	tag = elem.tag.replace("{http://www.w3.org/2000/svg}", "")  # Remove namespace
+
+	transform_attr = elem.get("transform")
+	transformations = (
+		parent_transformations + parse_transformations(transform_attr)
+		if transform_attr
+		else parent_transformations
+	)
+	elements = []
+
+	# Placeholder for masking code:
+	masks = []
+
+	if tag == "path":
+		d_attr = elem.get("d")
+		if not d_attr:
+			print(f"Skipping a <path> without 'd' attribute (path_{path_count}).")
+			return []
+		
+		# Assign a unique identifier to the parent path
+		parent_id = f"path_{path_count}"
+		path_count += 1
+
+		# Parse commands and split into sub-elements.
+		commands = parse_path_commands(d_attr)
+		current_element = []
+		subpath_count = 1  # Tracks unique IDs for subpaths within a path
+
+		# Determine visibility based on fill and opacity
+		visibility = check_visibility(elem, parent_transparency)
+		
+		for command in commands:
+			if command["cmd"] in ["M", "m"]:
+				# If current_element is not empty, a new moveto indicates a new element.
+				if current_element:
+					# Calculate winding order for the current subpath
+					winding_order = calculate_winding_order(current_element)
+					overlap_type = "merge" if winding_order > 0 else "difference"
+					
+					elements.append({
+						"element_id": f"{parent_id}_{subpath_count}",
+						"commands": current_element,
+						"transformations": transformations,
+						"overlap_type": overlap_type,
+						"visibility": visibility,
+						"masks": masks
+					})
+					subpath_count += 1
+					current_element = []
+			current_element.append(command)
+
+		if current_element:
+			# Calculate winding order for the last subpath
+			winding_order = calculate_winding_order(current_element)
+			overlap_type = "merge" if winding_order > 0 else "difference"
+			
+			elements.append({
+				"element_id": f"{parent_id}_{subpath_count}",
+				"commands": current_element,
+				"transformations": transformations,
+				"overlap_type": overlap_type,
+				"visibility": visibility,
+				"masks": masks
+			})
+		
+	elif tag == "rect":
+		# Extract rectangle properties
+		x = float(elem.get("x", 0))
+		y = float(elem.get("y", 0))
+		width = float(elem.get("width", 0))
+		height = float(elem.get("height", 0))
+		rx = elem.get("rx")
+		ry = elem.get("ry")
+
+		# Determine visibility based on fill and opacity
+		visibility = check_visibility(elem, parent_transparency)
+
+		if rx is None and ry is None:
+			rx, ry = 0, 0
+		elif rx is None:
+			rx = float(ry)
+		elif ry is None:
+			ry = float(rx)
+		else:
+			rx, ry = float(rx), float(ry)
+
+		# Ensure rx/ry don't exceed half the width/height
+		rx = min(rx, width / 2)
+		ry = min(ry, height / 2)
+
+		parent_id = f"rect_{rect_count}"
+		rect_count += 1
+
+		if rx == 0 and ry == 0:
+			# Simple rectangle (no rounding)
+			commands = [
+				{"cmd": "M", "args": [x, y]},
+				{"cmd": "L", "args": [x + width, y]},
+				{"cmd": "L", "args": [x + width, y + height]},
+				{"cmd": "L", "args": [x, y + height]},
+				{"cmd": "Z", "args": []}
+			]
+		else:
+			# Rounded rectangle using quadratic Bézier curves
+			commands = [
+				{"cmd": "M", "args": [x + rx, y]},  # Move to start of top-left curve
+				{"cmd": "L", "args": [x + width - rx, y]},  # Top straight line
+				{"cmd": "Q", "args": [x + width, y, x + width, y + ry]},  # Top-right curve
+				{"cmd": "L", "args": [x + width, y + height - ry]},  # Right straight line
+				{"cmd": "Q", "args": [x + width, y + height, x + width - rx, y + height]},  # Bottom-right curve
+				{"cmd": "L", "args": [x + rx, y + height]},  # Bottom straight line
+				{"cmd": "Q", "args": [x, y + height, x, y + height - ry]},  # Bottom-left curve
+				{"cmd": "L", "args": [x, y + ry]},  # Left straight line
+				{"cmd": "Q", "args": [x, y, x + rx, y]},  # Top-left curve
+				{"cmd": "Z", "args": []}  # Close path
+			]
+
+		elements.append({
+			"element_id": f"{parent_id}_{rect_count}",
+			"commands": commands,
+			"transformations": transformations,
+			"overlap_type": "merge",
+			"visibility": visibility,
+			"masks": masks
+		})
+
+	elif tag == "circle":
+		# Extract circle properties
+		cx, cy = float(elem.get("cx", 0)), float(elem.get("cy", 0))
+		r = float(elem.get("r", 0))
+
+		# Determine visibility based on fill and opacity
+		visibility = check_visibility(elem, parent_transparency)
+
+		parent_id = f"circle_{circle_count}"
+		circle_count += 1
+
+		# Control point offset factor
+		k = 0.5522847498 * r
+
+		commands = [
+			{"cmd": "M", "args": [cx, cy - r]},  # Move to top
+			{"cmd": "C", "args": [cx + k, cy - r, cx + r, cy - k, cx + r, cy]},  # Top-right
+			{"cmd": "C", "args": [cx + r, cy + k, cx + k, cy + r, cx, cy + r]},  # Bottom-right
+			{"cmd": "C", "args": [cx - k, cy + r, cx - r, cy + k, cx - r, cy]},  # Bottom-left
+			{"cmd": "C", "args": [cx - r, cy - k, cx - k, cy - r, cx, cy - r]},  # Top-left
+			{"cmd": "Z", "args": []}  # Close path
+		]
+
+		elements.append({
+			"element_id": f"{parent_id}_{circle_count}",
+			"commands": commands,
+			"transformations": transformations,
+			"overlap_type": "merge",
+			"visibility": visibility,
+			"masks": masks
+		})
+
+	elif tag == "ellipse":
+		# Extract ellipse properties
+		cx, cy = float(elem.get("cx", 0)), float(elem.get("cy", 0))
+		rx, ry = float(elem.get("rx", 0)), float(elem.get("ry", 0))
+
+		# Determine visibility based on fill and opacity
+		visibility = check_visibility(elem, parent_transparency)
+
+		parent_id = f"ellipse_{ellipse_count}"
+		ellipse_count += 1
+
+		kx, ky = 0.5522847498 * rx, 0.5522847498 * ry
+
+		commands = [
+			{"cmd": "M", "args": [cx, cy - ry]},
+			{"cmd": "C", "args": [cx + kx, cy - ry, cx + rx, cy - ky, cx + rx, cy]},
+			{"cmd": "C", "args": [cx + rx, cy + ky, cx + kx, cy + ry, cx, cy + ry]},
+			{"cmd": "C", "args": [cx - kx, cy + ry, cx - rx, cy + ky, cx - rx, cy]},
+			{"cmd": "C", "args": [cx - rx, cy - ky, cx - kx, cy - ry, cx, cy - ry]},
+			{"cmd": "Z", "args": []}
+		]
+
+		elements.append({
+			"element_id": f"{parent_id}_{ellipse_count}",
+			"commands": commands,
+			"transformations": transformations,
+			"overlap_type": "merge",
+			"visibility": visibility,
+			"masks": masks
+		})
+
+	elif tag == "polygon":
+		# Extract polygon properties
+		points_str = elem.get("points")
+		if not points_str:
+			print(f"Skipping <polygon> without 'points' attribute (polygon_{polygon_count}).")
+			return []
+
+		# Determine visibility based on fill and opacity
+		visibility = check_visibility(elem, parent_transparency)
+
+		# Parse points
+		points = []
+		for pt in points_str.strip().split():
+			coords = pt.split(',')
+			if len(coords) >= 2:
+				points.append((float(coords[0]), float(coords[1])))
+		if len(points) < 3:
+			print(f"Skipping <polygon> with insufficient points (polygon_{polygon_count}).")
+			return []
+
+		parent_id = f"polygon_{polygon_count}"
+		polygon_count += 1
+
+		commands = []
+		# Move to the first point.
+		commands.append({"cmd": "M", "args": [points[0][0], points[0][1]]})
+		# Line to each subsequent point.
+		for pt in points[1:]:
+			commands.append({"cmd": "L", "args": [pt[0], pt[1]]})
+		# Close the polygon.
+		commands.append({"cmd": "Z", "args": []})
+
+		elements.append({
+			"element_id": f"{parent_id}_{polygon_count}",
+			"commands": commands,
+			"transformations": transformations,
+			"overlap_type": "merge",
+			"visibility": visibility,
+			"masks": masks
+		})
+
+	return elements
+
+def process_groups(elem, parent_transformations, parent_transparency, parent_masks):
+	"""Process elements inside groups recursively."""
+	tag = elem.tag.replace("{http://www.w3.org/2000/svg}", "")  # Remove namespace
+	elements = []  # To hold the processed elements for this group
+	# Do not render tags in definions
+	if tag == "defs":
+		return []
+	elif tag in {"g", "svg", "clipPath", "mask"}:
+		# Process group transformations
+		transform_attr = elem.get("transform")
+		new_parent_transformations = list(parent_transformations)
+		if transform_attr:
+			new_parent_transformations.extend(parse_transformations(transform_attr))
+
+		# Process group transparency
+		fill = elem.get("fill", "undefined")
+		if fill == "undefined":
+			fill = parent_transparency["fill"]
+		base_opacity = float(elem.get("opacity", -1))
+		opacity = 1.0 #Default opacity
+		if base_opacity == -1:
+			opacity = parent_transparency["opacity"]
+		else:
+			opacity = base_opacity * parent_transparency["opacity"]
+		new_parent_transparency = {
+			"fill": fill,
+			"opacity": opacity
+		}
+
+		# Placeholder for masking logic
+		new_parent_masks = parent_masks
+
+		# Process all child elements of the group
+		for child in elem:
+			elements.extend(process_groups(child, new_parent_transformations, new_parent_transparency, new_parent_masks))  # Recursively process child elements
+	else:
+		# Process non-group elements (paths, rectangles, etc.) within this group
+		elements.extend(process_element(elem, parent_transformations, parent_transparency, parent_masks))  # Use the group transformations here
+
+	return elements
 
 #Refactored parts of convert_to_mse():
 
@@ -301,237 +761,14 @@ def extract_elements(svg_file):
 		root = tree.getroot()
 
 		all_elements = []
-
-		def process_element(elem, parent_transformations):
-			"""Helper function to process an individual element."""
-			global path_count, rect_count, circle_count, ellipse_count, polygon_count 
-
-			tag = elem.tag.replace("{http://www.w3.org/2000/svg}", "")  # Remove namespace
-
-			transform_attr = elem.get("transform")
-			transformations = parent_transformations + parse_transformations(transform_attr) if transform_attr else parent_transformations
-
-			if tag == "path":
-				d_attr = elem.get("d")
-				if not d_attr:
-					print(f"Skipping a <path> without 'd' attribute (path_{path_count}).")
-					return []
-				
-				# Assign a unique identifier to the parent path
-				parent_id = f"path_{path_count}"
-				path_count += 1
-
-				# Parse commands and split into elements.
-				commands = parse_path_commands(d_attr)
-
-				elements = []
-				current_element = []
-				subpath_count = 1  # Tracks unique IDs for subpaths within a path
-				
-				for command in commands:
-					if command["cmd"] in ["M", "m"]:
-						# If current_element is not empty, a new moveto indicates a new element.
-						if current_element:
-							elements.append({
-								"parent_id": parent_id,
-								"element_id": f"{parent_id}_{subpath_count}",
-								"path_type": "path",
-								"commands": current_element,
-								"transformations": transformations
-							})
-							subpath_count += 1
-							current_element = []
-					current_element.append(command)
-
-				if current_element:
-					elements.append({
-						"parent_id": parent_id,
-						"element_id": f"{parent_id}_{subpath_count}",
-						"path_type": "path",
-						"commands": current_element,
-						"transformations": transformations
-					})
-				
-				all_elements.extend(elements)
-
-			elif tag == "rect":
-				# Extract rectangle properties
-				x = float(elem.get("x", 0))
-				y = float(elem.get("y", 0))
-				width = float(elem.get("width", 0))
-				height = float(elem.get("height", 0))
-				rx = elem.get("rx")
-				ry = elem.get("ry")
-
-				if rx is None and ry is None:
-					rx, ry = 0, 0
-				elif rx is None:
-					rx = float(ry)
-				elif ry is None:
-					ry = float(rx)
-				else:
-					rx, ry = float(rx), float(ry)
-
-				# Ensure rx/ry don't exceed half the width/height
-				rx = min(rx, width / 2)
-				ry = min(ry, height / 2)
-
-				parent_id = f"rect_{rect_count}"
-				rect_count += 1
-
-				if rx == 0 and ry == 0:
-					# Simple rectangle (no rounding)
-					commands = [
-						{"cmd": "M", "args": [x, y]},
-						{"cmd": "L", "args": [x + width, y]},
-						{"cmd": "L", "args": [x + width, y + height]},
-						{"cmd": "L", "args": [x, y + height]},
-						{"cmd": "Z", "args": []}
-					]
-				else:
-					# Rounded rectangle using quadratic Bézier curves
-					commands = [
-						{"cmd": "M", "args": [x + rx, y]},  # Move to start of top-left curve
-						{"cmd": "L", "args": [x + width - rx, y]},  # Top straight line
-						{"cmd": "Q", "args": [x + width, y, x + width, y + ry]},  # Top-right curve
-						{"cmd": "L", "args": [x + width, y + height - ry]},  # Right straight line
-						{"cmd": "Q", "args": [x + width, y + height, x + width - rx, y + height]},  # Bottom-right curve
-						{"cmd": "L", "args": [x + rx, y + height]},  # Bottom straight line
-						{"cmd": "Q", "args": [x, y + height, x, y + height - ry]},  # Bottom-left curve
-						{"cmd": "L", "args": [x, y + ry]},  # Left straight line
-						{"cmd": "Q", "args": [x, y, x + rx, y]},  # Top-left curve
-						{"cmd": "Z", "args": []}  # Close path
-					]
-
-				all_elements.append({
-					"parent_id": parent_id,
-					"element_id": f"{parent_id}",
-					"path_type": "rect",
-					"commands": commands,
-					"transformations": transformations
-				})
-
-			elif tag == "circle":
-				# Extract circle properties
-				cx, cy = float(elem.get("cx", 0)), float(elem.get("cy", 0))
-				r = float(elem.get("r", 0))
-
-				# Unique identifier
-				parent_id = f"circle_{circle_count}"
-				circle_count += 1
-
-				# Control point offset factor
-				k = 0.5522847498 * r
-
-				commands = [
-					{"cmd": "M", "args": [cx, cy - r]},  # Move to top
-					{"cmd": "C", "args": [cx + k, cy - r, cx + r, cy - k, cx + r, cy]},  # Top-right
-					{"cmd": "C", "args": [cx + r, cy + k, cx + k, cy + r, cx, cy + r]},  # Bottom-right
-					{"cmd": "C", "args": [cx - k, cy + r, cx - r, cy + k, cx - r, cy]},  # Bottom-left
-					{"cmd": "C", "args": [cx - r, cy - k, cx - k, cy - r, cx, cy - r]},  # Top-left
-					{"cmd": "Z", "args": []}  # Close path
-				]
-
-				all_elements.append({
-					"parent_id": parent_id,
-					"element_id": parent_id,
-					"path_type": "circle",
-					"commands": commands,
-					"transformations": transformations
-				})
-
-			elif tag == "ellipse":
-				# Extract ellipse properties
-				cx, cy = float(elem.get("cx", 0)), float(elem.get("cy", 0))
-				rx, ry = float(elem.get("rx", 0)), float(elem.get("ry", 0))
-
-				parent_id = f"ellipse_{ellipse_count}"
-				ellipse_count += 1
-
-				kx, ky = 0.5522847498 * rx, 0.5522847498 * ry
-
-				commands = [
-					{"cmd": "M", "args": [cx, cy - ry]},
-					{"cmd": "C", "args": [cx + kx, cy - ry, cx + rx, cy - ky, cx + rx, cy]},
-					{"cmd": "C", "args": [cx + rx, cy + ky, cx + kx, cy + ry, cx, cy + ry]},
-					{"cmd": "C", "args": [cx - kx, cy + ry, cx - rx, cy + ky, cx - rx, cy]},
-					{"cmd": "C", "args": [cx - rx, cy - ky, cx - kx, cy - ry, cx, cy - ry]},
-					{"cmd": "Z", "args": []}
-				]
-
-				all_elements.append({
-					"parent_id": parent_id,
-					"element_id": parent_id,
-					"path_type": "ellipse",
-					"commands": commands,
-					"transformations": transformations
-				})
-
-			elif tag == "polygon":
-				# Extract polygon properties
-				points_str = elem.get("points")
-				if not points_str:
-					print(f"Skipping <polygon> without 'points' attribute (polygon_{polygon_count}).")
-					return []
-
-				# Parse points
-				points = []
-				for pt in points_str.strip().split():
-					coords = pt.split(',')
-					if len(coords) >= 2:
-						points.append((float(coords[0]), float(coords[1])))
-				if len(points) < 3:
-					print(f"Skipping <polygon> with insufficient points (polygon_{polygon_count}).")
-					return []
-
-				parent_id = f"polygon_{polygon_count}"
-				polygon_count += 1
-
-				commands = []
-				# Move to the first point.
-				commands.append({"cmd": "M", "args": [points[0][0], points[0][1]]})
-				# Line to each subsequent point.
-				for pt in points[1:]:
-					commands.append({"cmd": "L", "args": [pt[0], pt[1]]})
-				# Close the polygon.
-				commands.append({"cmd": "Z", "args": []})
-
-				all_elements.append({
-					"parent_id": parent_id,
-					"element_id": parent_id,
-					"path_type": "polygon",
-					"commands": commands,
-					"transformations": transformations
-				})
-
-			return []
-
-		def process_groups(elem, group_transformations):
-			"""Process elements inside groups recursively."""
-			tag = elem.tag.replace("{http://www.w3.org/2000/svg}", "")  # Remove namespace
-			elements = []  # To hold the processed elements for this group
-			# Do not render tags in definions
-			if tag == "defs":
-				return []
-			elif tag in {"g", "svg", "clipPath", "mask"}:
-				# Process group tag (apply transformations from the group)
-				transform_attr = elem.get("transform")
-				new_group_transformations = list(group_transformations)
-				if transform_attr:
-					new_group_transformations.extend(parse_transformations(transform_attr))
-
-				# Process all child elements of the group
-				for child in elem:
-					elements.extend(process_groups(child, new_group_transformations))  # Recursively process child elements
-			else:
-				# Process non-group elements (paths, rectangles, etc.) within this group
-				elements.extend(process_element(elem, group_transformations))  # Use the group transformations here
-
-			return elements
+		default_transparency = {
+			"fill": "none",
+			"opacity": 1.0
+		}
 
 		# Start processing the SVG tree from the root
 		for elem in root:
-			all_elements.extend(process_groups(elem, []))  # Process the root element (groups and non-groups)
+			all_elements.extend(process_groups(elem, [], default_transparency, []))  # Process the root element (groups and non-groups)
 		return all_elements
 
 	except ET.ParseError as e:
@@ -541,11 +778,10 @@ def extract_elements(svg_file):
 		print(f"Unexpected error: {e}")
 		return None
 
-def apply_transformations(point, transformations):
+def apply_transformations(x, y, transformations):
 	"""
 	Applies transformations to a single (x, y) point.
 	"""
-	x, y = point
 	point = np.array([x, y, 1])  # Homogeneous coordinates
 
 	for transform in reversed(transformations):  # Reverse order for correct application
@@ -596,25 +832,31 @@ def apply_transformations(point, transformations):
 
 	return point[0], point[1]
 
-def apply_transformations_to_segments(segments, transformations):
+def apply_transformations_to_commands(commands, transformations):
 	"""
-	Applies transformations to each coordinate in a segment list.
+	Applies transformations to each coordinate in a command.
 	"""
-	transformed_segments = []
-	for seg in segments:
-		if seg[0] == "C":  # Bezier curve
-			t_start = apply_transformations(seg[1], transformations)
-			t_c1 = apply_transformations(seg[2], transformations)
-			t_c2 = apply_transformations(seg[3], transformations)
-			t_end = apply_transformations(seg[4], transformations)
-			transformed_segments.append(("C", t_start, t_c1, t_c2, t_end))
-
-		elif seg[0] == "L":  # Line
-			t_start = apply_transformations(seg[1], transformations)
-			t_end = apply_transformations(seg[2], transformations)
-			transformed_segments.append(("L", t_start, t_end))
-
-	return transformed_segments
+	transformed_commands = []
+	for command in commands:
+		cmd = command["cmd"]
+		args = command["args"]
+		if cmd == "M":
+			end_x, end_y = args
+			new_end_x, new_end_y = apply_transformations(end_x, end_y, transformations)
+			transformed_commands.append({"cmd": "M", "args": [new_end_x, new_end_y]})
+		elif cmd == "L":
+			end_x, end_y = args
+			new_end_x, new_end_y = apply_transformations(end_x, end_y, transformations)
+			transformed_commands.append({"cmd": "L", "args": [new_end_x, new_end_y]})
+		elif cmd == "C":
+			control1_x, control1_y, control2_x, control2_y, end_x, end_y = args
+			new_end_x, new_end_y = apply_transformations(end_x, end_y, transformations)
+			new_control1_x, new_control1_y = apply_transformations(control1_x, control1_y, transformations)
+			new_control2_x, new_control2_y = apply_transformations(control2_x, control2_y, transformations)
+			transformed_commands.append({"cmd": "C", "args": [new_control1_x, new_control1_y, new_control2_x, new_control2_y, new_end_x, new_end_y]})
+		elif cmd == "Z":
+			transformed_commands.append({"cmd": "Z", "args": []})
+	return transformed_commands
 
 def build_segments(element):
 	"""
@@ -636,188 +878,43 @@ def build_segments(element):
 	segments = []
 	current_point = None
 	start_point = None  # Store the first point of a element
-	last_quad_ctrl = None  # For smooth quadratic
-	prev_command = None  # For S/s and T/t reflection
 	commands = element["commands"]
 
 	for command in commands:
 		cmd = command["cmd"]
 		args = command["args"]
 
-		if cmd in ["M", "m"]:
-			if cmd == "M":
-				current_point = (args[0], args[1])
-			else:
-				if current_point is None:
-					current_point = (args[0], args[1])
-				else:
-					current_point = (current_point[0] + args[0], current_point[1] + args[1])
+		if cmd == "M":
+			current_point = (args[0], args[1])
 			start_point = current_point  # Store element start
-			last_quad_ctrl = None
-			prev_command = cmd
 
-		elif cmd in ["C", "c"]:
+		elif cmd == "L":
 			if current_point is None:
 				continue
-			if cmd == "C":
-				c1 = (args[0], args[1])
-				c2 = (args[2], args[3])
-				end = (args[4], args[5])
-			else:  # 'c' is relative
-				c1 = (current_point[0] + args[0], current_point[1] + args[1])
-				c2 = (current_point[0] + args[2], current_point[1] + args[3])
-				end = (current_point[0] + args[4], current_point[1] + args[5])
+			# For L, we expect pairs of coordinates.
+			# Process them in pairs.
+			for i in range(0, len(args), 2):
+				end = (args[i], args[i+1])
+				segments.append(("L", current_point, end))
+				current_point = end
+
+		elif cmd == "C":
+			if current_point is None:
+				continue
+			c1 = (args[0], args[1])
+			c2 = (args[2], args[3])
+			end = (args[4], args[5])
 			segments.append(("C", current_point, c1, c2, end))
 			current_point = end
 
-		elif cmd in ["L", "l"]:
-			if current_point is None:
-				continue
-			if cmd == "L":
-				# For L, we expect pairs of coordinates.
-				# Process them in pairs.
-				for i in range(0, len(args), 2):
-					end = (args[i], args[i+1])
-					segments.append(("L", current_point, end))
-					current_point = end
-			else:  # 'l' is relative
-				for x_delta, y_delta in zip(args[::2], args[1::2]):
-					end = (current_point[0] + x_delta, current_point[1] + y_delta)
-					segments.append(("L", current_point, end))
-					current_point = end
-
-		elif cmd in ["S", "s"]:
-			if current_point is None:
-				continue
-			# Compute the first control point as a reflection if the previous command was C or S.
-			if prev_command in ["C", "S"] and segments:
-				last_seg = segments[-1]
-				if last_seg[0] == "C":
-					last_c2 = last_seg[3]
-				else:
-					last_c2 = current_point  # Fallback.
-				computed_c1 = (2 * current_point[0] - last_c2[0],
-							   2 * current_point[1] - last_c2[1])
-			else:
-				computed_c1 = current_point
-
-			if cmd == "S":
-				c2 = (args[0], args[1])
-				end = (args[2], args[3])
-			else:  # relative s
-				c2 = (current_point[0] + args[0], current_point[1] + args[1])
-				end = (current_point[0] + args[2], current_point[1] + args[3])
-			segments.append(("C", current_point, computed_c1, c2, end))
-			current_point = end
-			prev_command = cmd
-
-		elif cmd in ["Q", "q"]:
-			if current_point is None:
-				continue
-			# Quadratic curve: parameters: control point, endpoint.
-			if cmd == "Q":
-				quad_ctrl = (args[0], args[1])
-				end = (args[2], args[3])
-			else:  # relative quadratic
-				quad_ctrl = (current_point[0] + args[0], current_point[1] + args[1])
-				end = (current_point[0] + args[2], current_point[1] + args[3])
-			# Convert quadratic to cubic.
-			c1 = (current_point[0] + (2/3) * (quad_ctrl[0] - current_point[0]),
-				  current_point[1] + (2/3) * (quad_ctrl[1] - current_point[1]))
-			c2 = (end[0] + (2/3) * (quad_ctrl[0] - end[0]),
-				  end[1] + (2/3) * (quad_ctrl[1] - end[1]))
-			segments.append(("C", current_point, c1, c2, end))
-			current_point = end
-			last_quad_ctrl = quad_ctrl  # Store for T/t commands.
-			prev_command = cmd
-			
-		elif cmd in ["T", "t"]:
-			if current_point is None:
-				continue
-			# Smooth quadratic: if previous was Q or T, reflect its control point.
-			if last_quad_ctrl is not None:
-				quad_ctrl = (2 * current_point[0] - last_quad_ctrl[0],
-							 2 * current_point[1] - last_quad_ctrl[1])
-			else:
-				quad_ctrl = current_point
-			if cmd == "T":
-				end = (args[0], args[1])
-			else:  # relative
-				end = (current_point[0] + args[0], current_point[1] + args[1])
-			# Convert quadratic to cubic.
-			c1 = (current_point[0] + (2/3) * (quad_ctrl[0] - current_point[0]),
-				  current_point[1] + (2/3) * (quad_ctrl[1] - current_point[1]))
-			c2 = (end[0] + (2/3) * (quad_ctrl[0] - end[0]),
-				  end[1] + (2/3) * (quad_ctrl[1] - end[1]))
-			segments.append(("C", current_point, c1, c2, end))
-			current_point = end
-			last_quad_ctrl = quad_ctrl
-			prev_command = cmd
-
-		elif cmd in ["H", "h"]:
-			# Horizontal lineto: only x value(s); y remains the same.
-			if current_point is None:
-				continue
-			if cmd == "H":
-				for x_val in args:
-					end = (x_val, current_point[1])
-					segments.append(("L", current_point, end))
-					current_point = end
-			else:  # 'h' is relative
-				for x_delta in args:
-					end = (current_point[0] + x_delta, current_point[1])
-					segments.append(("L", current_point, end))
-					current_point = end
-
-		elif cmd in ["V", "v"]:
-			# Vertical lineto: only y value(s); x remains the same.
-			if current_point is None:
-				continue
-			if cmd == "V":
-				for y_val in args:
-					end = (current_point[0], y_val)
-					segments.append(("L", current_point, end))
-					current_point = end
-			else:  # 'v' is relative
-				for y_delta in args:
-					end = (current_point[0], current_point[1] + y_delta)
-					segments.append(("L", current_point, end))
-					current_point = end
-
-		elif cmd in ["A", "a"]:
-			# Arc command: parameters: rx, ry, phi, large_arc_flag, sweep_flag, x, y
-			if current_point is None:
-				continue
-			if cmd == "A":
-				rx, ry, phi_deg, laf, sf, x, y = args
-				end = (x, y)
-			else:
-				rx, ry, phi_deg, laf, sf, dx, dy = args
-				end = (current_point[0] + dx, current_point[1] + dy)
-			# Convert arc to one or more cubic Bézier segments.
-			arc_segs = arc_to_cubic(current_point[0], current_point[1],
-									rx, ry, phi_deg, int(laf), int(sf),
-									end[0], end[1])
-			for seg in arc_segs:
-				segments.append(seg)
-			current_point = end
-			last_quad_ctrl = None
-			prev_command = cmd
-
-		elif cmd in ["Z", "z"]:
+		elif cmd == "Z":
 			if current_point is not None and start_point is not None and current_point != start_point:
 				segments.append(("L", current_point, start_point))
 				current_point = start_point  # Ensure closure
-			last_quad_ctrl = None
-			prev_command = cmd
 
 		else:
 			# Skip any unsupported command.
 			continue
-
-	if "transformations" in element:
-		segments = apply_transformations_to_segments(segments, element["transformations"])
-
 	return segments
 
 def format_segment(seg, index, segments, viewbox):
@@ -903,9 +1000,38 @@ def convert_to_mse(svg_file):
 	mse_output = "mse_version: 0.3.5"
 
 	for element in reversed(elements):
-		segments = build_segments(element)
-		if not segments:
-			continue
+		# Get the visibility of the element, defaulting to "invisible" if not set
+		visibility = element.get("visibility", "invisible")
+
+		# Skip if the visibility is "invisible"
+		if visibility == "invisible":
+			continue  # Skip processing this element
+
+		# Get the overlap type (this is already part of the element)
+		overlap_type = element.get("overlap_type", "merge")  # Default to "merge" if not set
+		
+		if visibility == "visible" and overlap_type == "merge":
+			combine_value = "merge"
+		elif visibility == "border" and overlap_type == "merge":
+			combine_value = "border"
+		elif overlap_type == "difference":
+			combine_value = "difference"
+		else:
+			# Default to overlap if no other conditions match
+			combine_value = "overlap"
+
+		# Convert commands before building segments
+		if "commands" in element:
+			element["commands"] = convert_commands(element["commands"])
+			if "transformations" in element:
+				element["commands"] = apply_transformations_to_commands(element["commands"], element["transformations"])
+
+		masked_elements = apply_masks_to_element(element)
+		
+		for masked_element in masked_elements:
+			segments = build_segments(masked_element)
+			if not segments:
+				continue
 
 		element_name = element["element_id"] if "element_id" in element else "unnamed_path"
 
@@ -913,7 +1039,7 @@ def convert_to_mse(svg_file):
 part:
 	type: shape
 	name: {element_name}
-	combine: overlap
+	combine: {combine_value}
 """
 		mse_points = []
 
